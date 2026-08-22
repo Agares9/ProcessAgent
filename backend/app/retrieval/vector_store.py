@@ -66,10 +66,10 @@ class MemoryVectorStore(VectorStore):
 class ChromaVectorStore(VectorStore):
     """Chroma 实现（可选，需 chromadb）。"""
 
-    def __init__(self, collection_name: str = "processagent_chunks") -> None:
+    def __init__(self, collection_name: str = "processagent_chunks", path: str = "./chroma_data") -> None:
         import chromadb  # 延迟导入
 
-        self._client = chromadb.PersistentClient(path="./chroma_data")
+        self._client = chromadb.PersistentClient(path=path)
         self._coll = self._client.get_or_create_collection(name=collection_name, metadata={"hnsw:space": "cosine"})
 
     async def add(self, id_: str, vector: list[float], metadata: dict[str, Any]) -> None:
@@ -138,12 +138,12 @@ class MongoVectorStore(VectorStore):
         return sum(x * y for x, y in zip(a, b))
 
 
-def build_vector_store(backend: str, store=None) -> VectorStore:
+def build_vector_store(backend: str, store=None, chroma_path: str = "./chroma_data") -> VectorStore:
     if backend == "mongo" and store is not None:
         return MongoVectorStore(store)
     if backend == "chroma":
         try:
-            return ChromaVectorStore()
+            return ChromaVectorStore(path=chroma_path)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Chroma 初始化失败(%s)，回退内存向量库", exc)
     return MemoryVectorStore()

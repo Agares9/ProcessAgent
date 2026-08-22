@@ -102,8 +102,8 @@ class Container:
 def build_container(settings: Optional[Settings] = None) -> Container:
     settings = settings or get_settings()
 
-    mongo = MongoDB(settings)
-    store = build_store(mongo)
+    mongo = MongoDB(settings) if settings.storage_mode == "mongo" else None
+    store = build_store(mongo, settings)
     session_store = build_session_store(settings)
     job_queue = JobQueue(store, session_store, settings.async_stream_name)
 
@@ -112,7 +112,7 @@ def build_container(settings: Optional[Settings] = None) -> Container:
     embeddings = EmbeddingClient(settings, relay)
     pi_runtime = PiAgentRuntimeClient(settings)
 
-    vector_store = build_vector_store(settings.vector_backend, store)
+    vector_store = build_vector_store(settings.vector_backend, store, settings.chroma_path)
     bm25 = SharedBM25Index(store) if settings.vector_backend == "mongo" else BM25Index()
     reranker = build_reranker(settings.reranker_enabled, settings.reranker_model, relay=relay)
     hybrid = HybridRetriever(

@@ -55,8 +55,11 @@ async def lifespan(app: FastAPI):
         if chunks:
             for c in chunks:
                 container.bm25.add(c)
-            # 共享 Mongo 向量库已持久化，无需每个 Pod 启动时重复嵌入全量文档。
-            if settings.vector_backend != "mongo":
+            # 持久向量库已有完整索引时只重建 BM25，避免启动时重复计算全量 embedding。
+            persistent_vectors_ready = settings.vector_backend in {"mongo", "chroma"} and (
+                await container.vector_store.count()
+            ) >= len(chunks)
+            if not persistent_vectors_ready:
                 texts = [c["content"] for c in chunks]
                 vectors = await container.embeddings.embed(texts)
                 for c, v in zip(chunks, vectors):
@@ -65,7 +68,10 @@ async def lifespan(app: FastAPI):
                         v,
                         {"doc_id": c["doc_id"], "dept_id": c["dept_id"], "chunk_index": c["chunk_index"]},
                     )
-            logger.info("重建检索索引完成: %d chunks (BM25 + 向量)", len(chunks))
+            logger.info(
+                "重建检索索引完成: %d chunks (BM25%s)",
+                len(chunks), "，复用持久向量" if persistent_vectors_ready else " + 向量",
+            )
         else:
             logger.info("无已入库文档，跳过检索索引重建")
     except Exception as exc:  # noqa: BLE001

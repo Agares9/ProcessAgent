@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore")
 
     # ---- 服务 ----
     app_name: str = "ProcessAgent Manufacturing Decision Assistant"
@@ -42,9 +42,10 @@ class Settings(BaseSettings):
     embedding_dim: int = 3072
 
     # ---- 存储 ----
-    storage_mode: str = "mongo"  # mongo | memory
+    storage_mode: str = "mongo"  # mongo | sqlite | memory
     mongodb_uri: str = "mongodb://localhost:27017"
     mongodb_db: str = "processagent"
+    sqlite_path: str = "../local-data/processagent.db"
     redis_addr: str = "redis://localhost:6379"
     redis_db: int = 0
     async_stream_name: str = "processagent:jobs"
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
 
     # ---- 检索 ----
     vector_backend: str = "memory"  # memory | mongo | chroma | milvus
+    chroma_path: str = "../local-data/chroma"
     hybrid_topk: int = 5
     bm25_top: int = 20
     vector_top: int = 20

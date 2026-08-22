@@ -11,6 +11,8 @@
 | `evaluate_rag.py` | 真实部门文档评测：Recall@5 / MRR / 引用正确率 / 答案一致性 |
 | `migrate_memory.py` | 旧四层大文档记忆迁移到事实平面 + 五个记忆平面 |
 | `wait_for_deps.py` | 启动前等待 MongoDB/Redis 就绪（Docker） |
+| `import_manufacturing_rag.py` | 将 `manufacturing-data` 已处理数据导入本地 SQLite + Chroma |
+| `query_local_rag.py` | 查询本地制造业向量索引并显示文档、页码和原文 |
 
 用法：
 
@@ -21,4 +23,7 @@ python -m scripts.migrate_memory
 python -m scripts.async_worker
 python -m scripts.evaluate_rag --output evaluation-report.json
 STORAGE_MODE=memory EMBEDDING_PROVIDER=hash python -m scripts.evaluate_rag --ingest-base ../department_files
+python -m scripts.import_manufacturing_rag --source ../manufacturing-data --dry-run
+python -m scripts.import_manufacturing_rag --source ../manufacturing-data
+python -m scripts.query_local_rag "如何降低工业压缩空气系统的能源浪费"
 ```

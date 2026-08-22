@@ -6,7 +6,10 @@ MongoStore 生产使用；MemoryStore 供离线开发 / 单元测试（STORAGE_M
 from __future__ import annotations
 
 import copy
+import json
+import sqlite3
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Optional
 
 from app.storage.mongodb import MongoDB
@@ -381,8 +384,89 @@ class MongoStore(DataStore):
         )
 
 
-def build_store(mongo: Optional[MongoDB]) -> DataStore:
+class SQLiteStore(DataStore):
+    """Local persistent store using one JSON document table per collection."""
+
+    def __init__(self, path: str) -> None:
+        self.path = Path(path).expanduser().resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS documents "
+                "(collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, "
+                "PRIMARY KEY (collection, id))"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection)")
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    async def upsert(self, collection: str, doc: dict[str, Any]) -> None:
+        payload = json.dumps(doc, ensure_ascii=False, default=str)
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO documents(collection, id, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(collection, id) DO UPDATE SET payload=excluded.payload",
+                (collection, str(doc["_id"]), payload),
+            )
+
+    async def get(self, collection: str, id_: str) -> Optional[dict[str, Any]]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM documents WHERE collection=? AND id=?", (collection, id_)
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    async def find(
+        self, collection: str, query: Optional[dict[str, Any]] = None, limit: int = 0
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT payload FROM documents WHERE collection=? ORDER BY id"
+        params: list[Any] = [collection]
+        if not query and limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        docs = [json.loads(row["payload"]) for row in rows]
+        if query:
+            docs = [doc for doc in docs if MemoryStore._match(doc, query)]
+            if limit:
+                docs = docs[:limit]
+        return docs
+
+    async def delete(self, collection: str, id_: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM documents WHERE collection=? AND id=?", (collection, id_))
+
+    async def count(self, collection: str, query: Optional[dict[str, Any]] = None) -> int:
+        if query:
+            return len(await self.find(collection, query))
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM documents WHERE collection=?", (collection,)
+            ).fetchone()
+        return int(row["count"])
+
+    async def increment(
+        self, collection: str, id_: str, field: str, amount: int = 1,
+        defaults: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        doc = await self.get(collection, id_) or {"_id": id_, **copy.deepcopy(defaults or {})}
+        target = doc
+        parts = field.split(".")
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = int(target.get(parts[-1], 0)) + amount
+        await self.upsert(collection, doc)
+        return doc
+
+
+def build_store(mongo: Optional[MongoDB], settings=None) -> DataStore:
     """根据 STORAGE_MODE 构建存储。"""
     if mongo is not None and mongo.settings.storage_mode == "mongo":
         return MongoStore(mongo)
+    if settings is not None and settings.storage_mode == "sqlite":
+        return SQLiteStore(settings.sqlite_path)
     return MemoryStore()

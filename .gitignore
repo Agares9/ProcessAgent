@@ -27,6 +27,7 @@ out/
 data/
 volumes/
 chroma_data/
+local-data/
 *.db
 *.log
 
