@@ -37,6 +37,12 @@ def test_non_tenant_access_scope_requires_resource_ids():
         AccessScope(level=AccessLevel.FACTORY)
 
 
+def test_access_scope_defaults_to_whole_tenant():
+    scope = AccessScope()
+    assert scope.level == AccessLevel.TENANT
+    assert scope.resource_ids == []
+
+
 def test_parameter_window_preserves_original_and_normalized_values():
     window = ParameterWindow(
         _id="window_1",

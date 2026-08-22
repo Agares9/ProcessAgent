@@ -24,3 +24,10 @@ def test_expired_token_is_rejected(monkeypatch):
     token = auth.issue_token("student")
     monkeypatch.setattr(time, "time", lambda: 5000)
     assert auth.verify_token(token) is None
+
+
+def test_users_default_to_full_feature_access_and_tenant_scope():
+    public = AuthService._public({"_id": "operator", "username": "operator"})
+    assert public["permissions"] == ["*"]
+    assert public["tenant_id"] == "tenant_default"
+    assert public["access_scope"] == {"level": "tenant", "resource_ids": []}

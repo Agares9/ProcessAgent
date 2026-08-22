@@ -37,9 +37,19 @@ async def require_admin(
     authorization: Optional[str] = Header(default=None),
 ) -> dict:
     user = await require_user(request, authorization)
-    if user.get("role") != "admin":
+    if not has_permission(user, "admin:*"):
         raise HTTPException(status_code=403, detail="需要管理员权限")
     return user
+
+
+def has_permission(user: Optional[dict], permission: str) -> bool:
+    """Check an application permission; authenticated users default to full access."""
+    if not user:
+        return False
+    permissions = user.get("permissions")
+    if permissions is None:
+        permissions = ["*"]
+    return "*" in permissions or permission in permissions
 
 
 async def require_internal(

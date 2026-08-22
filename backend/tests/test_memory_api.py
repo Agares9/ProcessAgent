@@ -32,15 +32,21 @@ def test_user_memory_api_ownership_and_sensitive_rejection():
         assert client.get("/api/v1/memory/me", headers=headers).json()["data"] == []
 
 
-def test_student_cannot_publish_organization_memory():
+def test_authenticated_user_can_publish_organization_memory_by_default():
     with TestClient(app) as client:
         token = _login(client, "student", "student123")
         response = client.post(
             "/api/v1/memory/organization",
             headers={"Authorization": f"Bearer {token}"},
-            json={"scope": "department", "dept_id": "dept_jwc", "title": "FAQ", "content": "内容"},
+            json={
+                "scope": "department",
+                "dept_id": "dept_jwc",
+                "type": "note",
+                "title": "操作备注",
+                "content": "默认开放功能访问测试",
+            },
         )
-        assert response.status_code == 403
+        assert response.status_code == 200
 
 
 def test_admin_system_insights_and_department_scope():

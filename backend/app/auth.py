@@ -1,8 +1,8 @@
-"""鉴权：用户账号、口令哈希、无状态 HMAC Token。
+"""Authentication with permissive-by-default application access.
 
-- 用户角色：student（学生，进问答页）/ admin（管理员，进部门管理与审核中心）。
-- Token 格式：`<user_id>.<hexdigest>`，HMAC-SHA256 签名，服务端无状态校验。
-- 部门管理员：admin 账号可绑定 dept_id，未绑定则管理全部部门。
+Every authenticated user receives wildcard feature access unless an explicit
+permission list is configured. Tenant isolation remains independent from
+feature permissions.
 """
 from __future__ import annotations
 
@@ -20,6 +20,9 @@ from app.storage.store import DataStore
 from app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+DEFAULT_TENANT_ID = "tenant_default"
+DEFAULT_PERMISSIONS = ["*"]
 
 # 种子账号（演示用；生产应由管理员创建并妥善保管）
 DEFAULT_USERS = [
@@ -81,6 +84,9 @@ class AuthService:
             "name": u.get("name", u["username"]),
             "role": u.get("role", "student"),
             "dept_id": u.get("dept_id", ""),
+            "tenant_id": u.get("tenant_id", DEFAULT_TENANT_ID),
+            "permissions": u.get("permissions", DEFAULT_PERMISSIONS.copy()),
+            "access_scope": u.get("access_scope", {"level": "tenant", "resource_ids": []}),
             "password_hash": AuthService.hash_password(u["password"]),
             "created_at": _now(),
         }
@@ -106,6 +112,9 @@ class AuthService:
             "name": user.get("name", ""),
             "role": user.get("role", "student"),
             "dept_id": user.get("dept_id", ""),
+            "tenant_id": user.get("tenant_id", DEFAULT_TENANT_ID),
+            "permissions": user.get("permissions", DEFAULT_PERMISSIONS.copy()),
+            "access_scope": user.get("access_scope", {"level": "tenant", "resource_ids": []}),
         }
 
     # ---------- Token ----------
