@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+.npm-cache/
+
+# Secrets
+.env
+.env.local
+*.pem
+
+# Runtime and databases
+data/
+volumes/
+chroma_data/
+*.db
+*.log
+
+# Local manufacturing source data and generated artifacts
+文档/**
+!文档/迁移进度计划.md
+manufacturing-data/**
+
+# Local caches
+cache/
+models/
+**/__pycache__/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/

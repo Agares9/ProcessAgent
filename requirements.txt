@@ -1,0 +1,4 @@
+PyMuPDF>=1.24,<2
+beautifulsoup4>=4.12,<5
+# OCR is optional and must be installed/configured explicitly for scanned pages.
+# pytesseract>=0.3.10
