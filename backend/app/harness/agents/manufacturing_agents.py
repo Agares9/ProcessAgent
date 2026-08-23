@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import json
 from typing import Any
 
 from app.harness.manufacturing_schemas import (
@@ -10,6 +11,7 @@ from app.harness.manufacturing_schemas import (
     EnterpriseContext,
     ManufacturingIntent,
 )
+from app.llm.client import ChatMessage, LLMClient
 
 
 class ManufacturingIntentAgent:
@@ -49,6 +51,18 @@ class ManufacturingIntentAgent:
             confidence=0.7 if objectives else 0.4,
             raw={"source": "deterministic_fallback", "query": query, "context": context[:500]},
         )
+
+    async def infer_async(self, query: str, llm: LLMClient | None = None, context: str = "") -> ManufacturingIntent:
+        if llm is None or not llm.api_key:
+            return self.infer(query, context)
+        prompt = ("你是制造业意图识别助手，只输出JSON。字段：intent_type, objectives, industries, "
+                  "processes, materials, equipment, constraints, requested_outputs, missing_information, "
+                  f"needs_clarification, confidence。\n用户问题：{query}\n上下文：{context[:2000]}")
+        try:
+            data = await llm.complete_json([ChatMessage.system("严谨、保守，不得虚构企业事实。"), ChatMessage.user(prompt)], temperature=0.0)
+            return ManufacturingIntent.model_validate(data)
+        except Exception:
+            return self.infer(query, context)
 
 
 class EnterpriseContextAgent:
@@ -92,6 +106,23 @@ class LeadAgent:
             ),
         ]
         return AnalysisPlan(tasks=tasks, assumptions=context.assumptions, missing_information=context.missing_information)
+
+    async def plan_async(self, intent: ManufacturingIntent, context: EnterpriseContext, llm: LLMClient | None = None) -> AnalysisPlan:
+        if llm is None or not llm.api_key:
+            return self.plan(intent, context)
+        prompt = ("你是制造业LeadAgent，只输出JSON对象{tasks:[...]}。每个任务字段：task_id,title,objective,role,"
+                  "priority,dependencies,allowed_skills,completion_criteria。只能使用检索和适用性Skills，"
+                  f"不得创建固定专业Agent。\n意图：{intent.model_dump_json()}\n上下文：{context.model_dump_json()}")
+        try:
+            data = await llm.complete_json([ChatMessage.system("只输出合法JSON。"), ChatMessage.user(prompt)], temperature=0.0)
+            tasks = data.get("tasks", []) if isinstance(data, dict) else []
+            plan = AnalysisPlan.model_validate({"tasks": tasks, "assumptions": context.assumptions, "missing_information": context.missing_information})
+            allowed = {"search_manufacturing_knowledge", "search_case_studies", "get_document_evidence", "check_applicability", "compare_technical_options"}
+            for task in plan.tasks:
+                task.allowed_skills = [skill for skill in task.allowed_skills if skill in allowed]
+            return plan
+        except Exception:
+            return self.plan(intent, context)
 
 
 class VerifierAgent:
@@ -149,3 +180,17 @@ class ExecutiveSynthesisAgent:
             "assumptions": [],
             "citations": [],
         }
+
+    async def synthesize_async(self, query: str, results: list[Any], verification: dict[str, Any], llm: LLMClient | None = None) -> dict[str, Any]:
+        if llm is None or not llm.api_key or not verification.get("passed"):
+            return self.synthesize(query, results, verification)
+        evidence = [r.model_dump() if hasattr(r, "model_dump") else r for r in results]
+        prompt = ("你是制造业管理层方案汇总Agent，只输出JSON，字段：executive_summary, problem_definition, "
+                  "findings, recommended_actions, implementation_roadmap, risks_and_constraints, missing_data, "
+                  f"assumptions, citations。不得把外部案例效果写成企业实际结果。\n问题：{query}\n"
+                  f"验证：{json.dumps(verification, ensure_ascii=False)}\n分析：{json.dumps(evidence, ensure_ascii=False)[:18000]}")
+        try:
+            data = await llm.complete_json([ChatMessage.system("只输出合法JSON，不输出推理过程。"), ChatMessage.user(prompt)])
+            return data if isinstance(data, dict) else self.synthesize(query, results, verification)
+        except Exception:
+            return self.synthesize(query, results, verification)

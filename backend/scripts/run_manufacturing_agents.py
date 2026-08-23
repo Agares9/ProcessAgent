@@ -17,11 +17,13 @@ from app.harness.agents.manufacturing_agents import (
 from app.harness.manufacturing_skills import ManufacturingSkillAccess
 from app.harness.task_executor import ManufacturingTaskExecutor, build_default_task_registry
 from app.llm.embeddings import EmbeddingClient
+from app.llm.deepseek import DeepSeekClient
+from app.config import get_settings
 from app.retrieval.vector_store import ChromaVectorStore
 from app.storage.store import SQLiteStore
 
 
-async def run(query: str, top_k: int = 5, profile: dict | None = None) -> dict:
+async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: bool = False) -> dict:
     settings = Settings(
         storage_mode="sqlite", sqlite_path="../local-data/processagent.db",
         vector_backend="chroma", chroma_path="../local-data/chroma",
@@ -33,9 +35,11 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None) -> dict:
     embeddings = EmbeddingClient(settings, relay=None)
     skills = ManufacturingSkillAccess(store, vectors, embeddings)
 
-    intent = ManufacturingIntentAgent().infer(query)
+    llm = DeepSeekClient(get_settings()) if use_llm else None
+    intent_agent = ManufacturingIntentAgent()
+    intent = await intent_agent.infer_async(query, llm=llm)
     context = EnterpriseContextAgent().build(query, intent, profile)
-    plan = LeadAgent().plan(intent, context)
+    plan = await LeadAgent().plan_async(intent, context, llm=llm)
     executor = ManufacturingTaskExecutor(build_default_task_registry(skills), skills)
     results = await executor.execute(plan, {
         "query": query,
@@ -45,7 +49,7 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None) -> dict:
     })
 
     verification = VerifierAgent().verify(results)
-    solution = ExecutiveSynthesisAgent().synthesize(query, results, verification)
+    solution = await ExecutiveSynthesisAgent().synthesize_async(query, results, verification, llm=llm)
     return {
         "query": query, "intent": intent.model_dump(), "context": context.model_dump(),
         "plan": plan.model_dump(), "results": [item.model_dump() for item in results],
@@ -59,9 +63,10 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--profile", type=Path, help="企业上下文 JSON 文件")
     parser.add_argument("--output", type=Path, help="保存完整 JSON 结果")
+    parser.add_argument("--llm", action="store_true", help="使用配置的 DeepSeek 进行结构化推理")
     args = parser.parse_args()
     profile = json.loads(args.profile.read_text(encoding="utf-8")) if args.profile else None
-    result = asyncio.run(run(args.query, args.top_k, profile))
+    result = asyncio.run(run(args.query, args.top_k, profile, args.llm))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
