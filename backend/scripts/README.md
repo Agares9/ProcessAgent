@@ -13,6 +13,7 @@
 | `wait_for_deps.py` | 启动前等待 MongoDB/Redis 就绪（Docker） |
 | `import_manufacturing_rag.py` | 将 `manufacturing-data` 已处理数据导入本地 SQLite + Chroma |
 | `query_local_rag.py` | 查询本地制造业向量索引并显示文档、页码和原文 |
+| `run_manufacturing_agents.py` | 命令行运行5个固定Agent和动态分析任务 |
 
 用法：
 
@@ -26,4 +27,7 @@ STORAGE_MODE=memory EMBEDDING_PROVIDER=hash python -m scripts.evaluate_rag --ing
 python -m scripts.import_manufacturing_rag --source ../manufacturing-data --dry-run
 python -m scripts.import_manufacturing_rag --source ../manufacturing-data
 python -m scripts.query_local_rag "如何降低工业压缩空气系统的能源浪费"
+python -m scripts.run_manufacturing_agents "制造企业如何降低压缩空气系统能耗并减少碳排放"
 ```
+
+命令行流程会输出意图、缺失数据、任务依赖、证据页码、验证结果和结构化方案。当前没有企业基线时，结果会明确列出缺失数据，不生成企业实际节能量。
