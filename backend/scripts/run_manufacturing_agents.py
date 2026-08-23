@@ -15,7 +15,7 @@ from app.harness.agents.manufacturing_agents import (
     VerifierAgent,
 )
 from app.harness.manufacturing_skills import ManufacturingSkillAccess
-from app.harness.manufacturing_schemas import TaskResult
+from app.harness.task_executor import ManufacturingTaskExecutor, build_default_task_registry
 from app.llm.embeddings import EmbeddingClient
 from app.retrieval.vector_store import ChromaVectorStore
 from app.storage.store import SQLiteStore
@@ -36,29 +36,13 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None) -> dict:
     intent = ManufacturingIntentAgent().infer(query)
     context = EnterpriseContextAgent().build(query, intent, profile)
     plan = LeadAgent().plan(intent, context)
-    results: list[TaskResult] = []
-
-    for task in sorted(plan.tasks, key=lambda item: (item.priority, item.task_id)):
-        if task.task_id == "knowledge_search":
-            hits = await skills.execute("search_manufacturing_knowledge", query=query, top_k=top_k)
-            results.append(TaskResult(
-                task_id=task.task_id, status="completed" if hits else "failed",
-                summary=f"检索到 {len(hits)} 条知识证据", artifacts=[{
-                    "claim": hit["excerpt"][:160], "value": hit["score"],
-                    "source_id": hit["doc_id"], "chunk_id": hit["chunk_id"],
-                    "page_start": hit["page_start"], "page_end": hit["page_end"],
-                    "excerpt": hit["excerpt"], "visibility": hit["visibility"],
-                } for hit in hits], missing_information=context.missing_information,
-            ))
-        elif task.task_id == "applicability_check":
-            previous = next((item for item in results if item.task_id == "knowledge_search"), None)
-            artifacts = previous.artifacts if previous else []
-            results.append(TaskResult(
-                task_id=task.task_id, status="completed" if artifacts else "skipped",
-                summary="基于检索证据保留候选措施，适用性需结合企业基线复核",
-                artifacts=artifacts, assumptions=["当前未提供企业实测基线"],
-                missing_information=context.missing_information,
-            ))
+    executor = ManufacturingTaskExecutor(build_default_task_registry(skills), skills)
+    results = await executor.execute(plan, {
+        "query": query,
+        "context": context.model_dump(),
+        "missing_information": context.missing_information,
+        "top_k": top_k,
+    })
 
     verification = VerifierAgent().verify(results)
     solution = ExecutiveSynthesisAgent().synthesize(query, results, verification)
