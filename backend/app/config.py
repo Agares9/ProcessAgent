@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     embedding_provider: str = "relay"
     embedding_model: str = "text-embedding-3-large"
     embedding_dim: int = 3072
+    embedding_local_only: bool = False
 
     # ---- 存储 ----
     storage_mode: str = "mongo"  # mongo | sqlite | memory

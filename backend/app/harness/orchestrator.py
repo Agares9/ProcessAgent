@@ -5,6 +5,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 import time
 import uuid
 from datetime import datetime, timezone
@@ -407,3 +410,13 @@ class Orchestrator:
             "retrieved_count": len(chunks),
             "route": route,
         }
+# CLI/runtime facade: existing Harness Orchestrator remains backward compatible.
+class ManufacturingOrchestratorFacade:
+    """Unified entry point for the manufacturing pipeline without CLI concerns."""
+
+    def __init__(self, pipeline: Callable[..., Awaitable[dict[str, Any]]]) -> None:
+        self._pipeline = pipeline
+
+    async def run(self, query: str, *, top_k: int = 5, profile: dict | None = None,
+                  use_llm: bool = False, session_id: str = "", user_id: str = "") -> dict[str, Any]:
+        return await self._pipeline(query, top_k, profile, use_llm, session_id, user_id)

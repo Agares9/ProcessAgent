@@ -11,6 +11,10 @@ from typing import Optional
 import hashlib
 import math
 import re
+import os
+import logging
+import contextlib
+import io
 
 from app.config import Settings
 from app.llm.relay import RelayClient
@@ -53,12 +57,40 @@ class EmbeddingClient:
     def _local_embed(self, texts: list[str]) -> list[list[float]]:
         try:
             from sentence_transformers import SentenceTransformer  # 延迟导入，可选依赖
+            try:
+                from transformers import logging as transformers_logging
+                transformers_logging.set_verbosity_error()
+            except Exception:
+                pass
         except ImportError:
             logger.warning("未安装 sentence-transformers，回退 hash 向量")
             return [self._hash_embed(t) for t in texts]
         if self._local_model is None:
-            self._local_model = SentenceTransformer(self.model)
-        vecs = self._local_model.encode(texts, normalize_embeddings=True)
+            os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+            os.environ.setdefault("TQDM_DISABLE", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+            os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+            os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+            logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+            logging.getLogger("transformers").setLevel(logging.ERROR)
+            logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+            if self.settings.embedding_local_only:
+                os.environ.setdefault("HF_HUB_OFFLINE", "1")
+                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            try:
+                # sentence-transformers emits tqdm/HF notices directly to stdout/stderr.
+                # Keep the interactive CLI clean; failures are raised below with a concise message.
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    if self.settings.embedding_local_only:
+                        self._local_model = SentenceTransformer(self.model, local_files_only=True, device="cpu")
+                    else:
+                        self._local_model = SentenceTransformer(self.model, device="cpu")
+            except TypeError:  # older sentence-transformers
+                self._local_model = SentenceTransformer(self.model)
+            except Exception as exc:
+                mode = "本地离线缓存" if self.settings.embedding_local_only else "模型下载或本地缓存"
+                raise RuntimeError(f"Embedding 模型不可用（{mode}）: {self.model}") from exc
+        vecs = self._local_model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
         return [v.tolist() for v in vecs]
 
     def _hash_embed(self, text: str) -> list[float]:

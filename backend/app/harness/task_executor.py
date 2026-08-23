@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections import defaultdict
 from typing import Any, Awaitable, Callable
 
@@ -99,6 +100,126 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
             missing_information=context.get("missing_information", []),
         )
 
+    async def skill_task(task: AnalysisTask, context: dict[str, Any]) -> TaskResult:
+        """Generic adapter for deterministic Skills registered by LeadAgent."""
+        skill_map = {
+            "case_study_search": "search_case_studies",
+            "parameter_extraction": "extract_process_parameters",
+            "applicability_analysis": "check_applicability",
+            "option_comparison": "compare_technical_options",
+            "financial_analysis": "calculate_project_financials",
+            "energy_analysis": "calculate_energy_savings",
+            "carbon_analysis": "calculate_emission_reduction",
+            "citation_check": "verify_citations",
+            "constraint_check": "check_constraint_compliance",
+        }
+        skill = task.input_data.get("skill") or skill_map.get(task.task_id) or (task.allowed_skills[0] if task.allowed_skills else "")
+        if not skill:
+            return TaskResult(task_id=task.task_id, status="failed", error="任务未声明 Skill")
+        kwargs = dict(task.input_data.get("kwargs") or {})
+        if skill == "extract_process_parameters":
+            kwargs.setdefault("text", context.get("query", ""))
+        elif skill == "check_applicability":
+            kwargs.setdefault("option", context.get("query", ""))
+            kwargs.setdefault("context", context)
+        elif skill == "calculate_energy_savings":
+            source = _dependency_data(context)
+            kwargs.setdefault("baseline_kwh", source.get("baseline_kwh"))
+            kwargs.setdefault("saving_rate", source.get("saving_rate"))
+            query = str(context.get("query", ""))
+            if kwargs.get("baseline_kwh") is None:
+                kwargs["baseline_kwh"] = _number_after(query, ("基线能耗", "基线电耗", "用电量", "能耗"), ("万度", "度", "kWh"))
+            if kwargs.get("saving_rate") is None:
+                rate = _number_after(query, ("节能率", "降低", "下降"), ("%", "％"))
+                kwargs["saving_rate"] = rate / 100 if rate is not None else None
+        elif skill == "calculate_emission_reduction":
+            source = _dependency_data(context)
+            kwargs.setdefault("saved_kwh", source.get("saved_kwh"))
+            kwargs.setdefault("emission_factor", source.get("emission_factor", 0.5703))
+        elif skill == "calculate_project_financials":
+            source = _dependency_data(context)
+            kwargs.setdefault("investment", source.get("investment"))
+            kwargs.setdefault("annual_saving", source.get("annual_saving"))
+            kwargs.setdefault("annual_operating_cost", source.get("annual_operating_cost", 0.0))
+            query = str(context.get("query", ""))
+            kwargs["investment"] = kwargs.get("investment") or _number_after(query, ("投资", "预算", "投入"), ("万元", "万", "元"))
+            kwargs["annual_saving"] = kwargs.get("annual_saving") or _number_after(query, ("年节省", "每年节省", "年度节省", "年收益"), ("万元", "万", "元"))
+        elif skill == "verify_citations":
+            kwargs.setdefault("claims", _dependency_artifacts(context))
+        elif skill == "check_constraint_compliance":
+            kwargs.setdefault("proposal", _dependency_data(context))
+            kwargs.setdefault("constraints", context.get("constraints", {}))
+        required = {
+            "calculate_energy_savings": ("baseline_kwh", "saving_rate"),
+            "calculate_emission_reduction": ("saved_kwh",),
+            "calculate_project_financials": ("investment", "annual_saving"),
+        }.get(skill, ())
+        missing = [key for key in required if kwargs.get(key) is None]
+        if missing:
+            return TaskResult(task_id=task.task_id, status="skipped", summary="缺少计算输入", missing_information=missing)
+        try:
+            value = await skill_gateway.execute(skill, **kwargs)
+            data = value if isinstance(value, dict) else {"value": value}
+            prior_sources = []
+            for dependency in (context.get("dependencies") or {}).values():
+                prior_sources.extend(dependency.get("data", {}).get("source_chain", []))
+            if prior_sources:
+                data.setdefault("source_chain", list(dict.fromkeys(prior_sources)))
+            if data.get("source_type"):
+                data.setdefault("source_chain", []).append(data["source_type"])
+            return TaskResult(
+                task_id=task.task_id, status="completed", summary=f"Skill {skill} 执行完成", data=data,
+                data_schema=str(data.get("data_schema", f"{skill}.v1")),
+                sources=[str(x) for x in data.get("source_ids", [])] if isinstance(data, dict) else [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            return TaskResult(task_id=task.task_id, status="failed", error=str(exc))
+
     registry.register("knowledge_search", knowledge_search)
     registry.register("applicability_check", applicability_check)
+    for task_id in (
+        "case_study_search", "parameter_extraction", "applicability_analysis", "option_comparison",
+        "financial_analysis", "energy_analysis", "carbon_analysis",
+        "citation_check", "constraint_check",
+    ):
+        registry.register(task_id, skill_task)
     return registry
+
+
+def _dependency_data(context: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for result in (context.get("dependencies") or {}).values():
+        merged.update(result.get("data") or {})
+    return merged
+
+
+def _dependency_artifacts(context: dict[str, Any]) -> list[dict[str, Any]]:
+    artifacts: list[dict[str, Any]] = []
+    for result in (context.get("dependencies") or {}).values():
+        artifacts.extend(result.get("artifacts") or [])
+    return artifacts
+
+
+def _number_after(text: str, labels: tuple[str, ...], units: tuple[str, ...]) -> float | None:
+    """Parse a number near a business label and normalize common Chinese units."""
+    label = next((x for x in labels if x in text), None)
+    if not label:
+        return None
+    match = re.search(re.escape(label) + r"[^0-9]{0,12}([0-9]+(?:\.[0-9]+)?)\s*(万元|万度|MWh|kWh|MW|kW|kg|吨|千克|吨|t|度|元|万|%|％)?", text, re.I)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2) or ""
+    return _normalize_unit(value, unit)
+
+
+def _normalize_unit(value: float, unit: str, target: str | None = None) -> float:
+    """Normalize common manufacturing units to calculation base units."""
+    factors = {
+        "元": 1.0, "万": 10000.0, "万元": 10000.0,
+        "度": 1.0, "kWh": 1.0, "MWh": 1000.0, "万度": 10000.0,
+        "kg": 1.0, "千克": 1.0, "t": 1000.0, "吨": 1000.0,
+        "kW": 1.0, "MW": 1000.0, "千瓦": 1.0,
+        "%": 0.01, "％": 0.01,
+    }
+    return value * factors.get(unit, 1.0)

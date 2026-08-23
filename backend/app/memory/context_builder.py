@@ -40,6 +40,16 @@ class MemoryContext:
             sections.append("组织记忆提示（必须回查其官方来源）：" + "；".join(m.get("content", "") for m in self.org_items))
         return "\n".join(sections)
 
+    def intent_prompt_text(self) -> str:
+        """Classification context: confirmed facts only, never prior assistant prose."""
+        sections: list[str] = []
+        entities = self.session.get("entities") or {}
+        if entities:
+            sections.append(f"已确认用户实体：{entities}")
+        if self.user_items:
+            sections.append("用户明确资料：" + "；".join(f"{m.get('key')}={m.get('value')}" for m in self.user_items))
+        return "\n".join(sections)
+
 
 class MemoryContextBuilder:
     def __init__(

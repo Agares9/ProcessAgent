@@ -10,6 +10,9 @@ class ManufacturingIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent_type: str = "general_manufacturing"
+    domain: Literal["manufacturing", "capability", "general_chat", "out_of_scope"] = "manufacturing"
+    response_mode: Literal["analysis", "capability_info", "boundary_redirect"] = "analysis"
+    complexity: Literal["simple", "standard", "complex"] = "standard"
     objectives: list[str] = Field(default_factory=list)
     industries: list[str] = Field(default_factory=list)
     processes: list[str] = Field(default_factory=list)
@@ -101,6 +104,9 @@ class TaskResult(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
     error: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+    data_schema: str = "v1"
+    sources: list[str] = Field(default_factory=list)
 
 
 class VerificationReport(BaseModel):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from app.llm.embeddings import EmbeddingClient
 from app.retrieval.vector_store import VectorStore
@@ -17,6 +18,9 @@ class ManufacturingSkillAccess:
         "get_document_evidence",
         "get_enterprise_profile",
         "get_factory_process_map",
+        "extract_process_parameters", "check_applicability", "compare_technical_options",
+        "calculate_project_financials", "calculate_energy_savings", "calculate_emission_reduction",
+        "verify_citations", "check_constraint_compliance",
     }
 
     def __init__(self, store: DataStore, vector_store: VectorStore, embeddings: EmbeddingClient) -> None:
@@ -73,3 +77,66 @@ class ManufacturingSkillAccess:
 
     async def get_factory_process_map(self, workspace_id: str = "default_company") -> dict[str, Any]:
         return {"workspace_id": workspace_id, "factories": [], "processes": []}
+
+    async def extract_process_parameters(self, text: str) -> dict[str, Any]:
+        patterns = {
+            "temperature": r"温度[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)\s*(°C|℃|摄氏度)?",
+            "pressure": r"压力[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)\s*(MPa|kPa|bar)?",
+            "power_kw": r"功率[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)\s*(kW|千瓦)?",
+            "cycle_time_s": r"(?:周期|循环时间|节拍)[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)\s*(秒|s)?",
+            "energy_kwh": r"(?:电耗|用电量|能耗)[^0-9]{0,8}([0-9]+(?:\.[0-9]+)?)\s*(kWh|度)?",
+        }
+        values = {}
+        for name, pattern in patterns.items():
+            match = re.search(pattern, text, re.I)
+            if match:
+                values[name] = {"value": float(match.group(1)), "unit": match.group(2) or ""}
+        processes = [p for p in ("机加工", "注塑", "焊接", "装配", "化工合成", "压缩空气", "蒸汽") if p in text]
+        return {"processes": processes, "parameters": values, "missing": [] if values else ["工艺参数"], "source_type": "user_input", "source_text": text, "data_schema": "process_parameters.v1"}
+
+    async def check_applicability(self, option: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        context = context or {}
+        text = str(context)
+        blockers = []
+        if not text.strip():
+            blockers.append("缺少工艺或设备上下文")
+        if "预算" in text and "预算" not in option:
+            blockers.append("需要核对预算约束")
+        return {"applicable": not blockers, "conditions": ["需通过现场数据验证"], "limitations": blockers, "confidence": 0.6 if not blockers else 0.3}
+
+    async def compare_technical_options(self, options: list[dict[str, Any]], criteria: dict[str, float] | None = None) -> dict[str, Any]:
+        criteria = criteria or {"saving": 0.4, "cost": 0.25, "risk": 0.2, "fit": 0.15}
+        ranked = []
+        for item in options:
+            score = sum(float(item.get(key, 0)) * weight for key, weight in criteria.items())
+            ranked.append({**item, "score": round(score, 4)})
+        ranked.sort(key=lambda x: x["score"], reverse=True)
+        return {"options": ranked, "recommended_option": ranked[0].get("name") if ranked else None, "criteria": criteria}
+
+    async def calculate_project_financials(self, investment: float, annual_saving: float, annual_operating_cost: float = 0.0) -> dict[str, Any]:
+        net = float(annual_saving) - float(annual_operating_cost)
+        return {"investment": float(investment), "annual_gross_saving": float(annual_saving), "annual_net_saving": net, "payback_years": round(float(investment) / net, 2) if net > 0 else None, "source_type": "calculation", "formula": "investment / (annual_saving - annual_operating_cost)", "inputs": {"investment": float(investment), "annual_saving": float(annual_saving), "annual_operating_cost": float(annual_operating_cost)}, "data_schema": "financials.v1"}
+
+    async def calculate_energy_savings(self, baseline_kwh: float, saving_rate: float) -> dict[str, Any]:
+        saved = float(baseline_kwh) * float(saving_rate)
+        return {"baseline_kwh": float(baseline_kwh), "saving_rate": float(saving_rate), "saved_kwh": saved, "remaining_kwh": float(baseline_kwh) - saved, "unit": "kWh", "source_type": "calculation", "formula": "baseline_kwh * saving_rate", "inputs": {"baseline_kwh": float(baseline_kwh), "saving_rate": float(saving_rate)}, "data_schema": "energy_savings.v1"}
+
+    async def calculate_emission_reduction(self, saved_kwh: float, emission_factor: float = 0.5703) -> dict[str, Any]:
+        return {"saved_kwh": float(saved_kwh), "emission_factor": float(emission_factor), "reduced_kgco2e": float(saved_kwh) * float(emission_factor), "reduced_tco2e": float(saved_kwh) * float(emission_factor) / 1000, "unit": "tCO2e", "source_type": "calculation", "formula": "saved_kwh * emission_factor / 1000", "inputs": {"saved_kwh": float(saved_kwh), "emission_factor": float(emission_factor)}, "data_schema": "emission_reduction.v1"}
+
+    async def verify_citations(self, claims: list[dict[str, Any]]) -> dict[str, Any]:
+        errors = []
+        for i, claim in enumerate(claims):
+            if not claim.get("source_id") or not claim.get("chunk_id"):
+                errors.append(f"claim[{i}] 缺少 source_id 或 chunk_id")
+            if not claim.get("excerpt"):
+                errors.append(f"claim[{i}] 缺少摘录")
+        return {"passed": not errors, "errors": errors, "checked": len(claims)}
+
+    async def check_constraint_compliance(self, proposal: dict[str, Any], constraints: dict[str, Any]) -> dict[str, Any]:
+        violations = []
+        if constraints.get("max_investment") is not None and proposal.get("investment", 0) > constraints["max_investment"]:
+            violations.append("超过最大投资额")
+        if constraints.get("max_payback_years") is not None and proposal.get("payback_years") is not None and proposal["payback_years"] > constraints["max_payback_years"]:
+            violations.append("超过目标回收期")
+        return {"compliant": not violations, "violations": violations}

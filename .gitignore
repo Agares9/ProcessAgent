@@ -32,8 +32,7 @@ local-data/
 *.log
 
 # Local manufacturing source data and generated artifacts
-文档/**
-!文档/迁移进度计划.md
+文档/
 manufacturing-data/**
 
 # Local caches
