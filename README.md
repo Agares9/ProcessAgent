@@ -367,11 +367,11 @@ PROCESSAGENT_USE_LLM=true
   300万元，两年内收回投资。
 ```
 
-![image-20260824004014589](C:\Users\Demon\AppData\Roaming\Typora\typora-user-images\image-20260824004014589.png)
+![CLI运行示例](docs/assets/runtime.png)
 
 ##### 第一轮
 
-![image-20260824004202662](C:\Users\Demon\AppData\Roaming\Typora\typora-user-images\image-20260824004202662.png)
+![第一轮问答](docs/assets/workflow.png)
 
 详细回答：
 
@@ -444,7 +444,7 @@ PROCESSAGENT_USE_LLM=true
 
 ##### 第二轮
 
-![image-20260824004242116](C:\Users\Demon\AppData\Roaming\Typora\typora-user-images\image-20260824004242116.png)
+![第二轮问答](docs/assets/knowledge-base.png)
 
 ```
 用户> 工厂有12台180kW注塑机，每月生产20万件，设备每月运行720小时。
@@ -508,7 +508,7 @@ PROCESSAGENT_USE_LLM=true
 
 ##### 第三轮
 
-![image-20260824004313540](C:\Users\Demon\AppData\Roaming\Typora\typora-user-images\image-20260824004313540.png)
+![第三轮问答](docs/assets/cli-demo.png)
 
 ```
 用户> 最近三个月月用电量分别是96万、101万和110万kWh，单位产品能耗从4.8kWh/件上升到5.5kWh/件，电价0.82元/kWh。希望一年降低15%，预算300万元，两年内收回投资
@@ -630,4 +630,3 @@ PROCESSAGENT_USE_LLM=true
 
 如需进一步细化方案，建议提供：主要耗能设备清单、生产班次与产量数据、是否使用压缩空气、配电系统基本情况等信息。
 ```
-
