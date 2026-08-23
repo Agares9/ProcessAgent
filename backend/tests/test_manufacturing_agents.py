@@ -4,7 +4,9 @@ from app.harness.agents.manufacturing_agents import (
     EnterpriseContextAgent,
     LeadAgent,
     ManufacturingIntentAgent,
+    VerifierAgent,
 )
+from app.harness.manufacturing_schemas import EvidenceArtifact, TaskResult
 
 
 def test_manufacturing_intent_extracts_objectives_and_missing_data():
@@ -33,3 +35,21 @@ def test_lead_agent_creates_dependency_plan_with_skill_allowlist():
     assert [task.task_id for task in plan.tasks] == ["knowledge_search", "applicability_check"]
     assert plan.tasks[1].dependencies == ["knowledge_search"]
     assert "search_case_studies" in plan.tasks[0].allowed_skills
+
+
+def test_verifier_rejects_missing_evidence_fields_and_duplicates():
+    result = TaskResult(task_id="search", status="completed", artifacts=[
+        EvidenceArtifact(claim="有证据", source_id="doc1", chunk_id="chunk1", page_start=2, excerpt="原文"),
+        EvidenceArtifact(claim="重复", source_id="doc1", chunk_id="chunk1", page_start=2, excerpt="原文"),
+        EvidenceArtifact(claim="无来源", excerpt="原文"),
+    ])
+    report = VerifierAgent().verify([result])
+    assert report["passed"] is False
+    assert "duplicate_evidence:chunk1" in report["citation_errors"]
+    assert any(item.startswith("missing_source:") for item in report["citation_errors"])
+
+
+def test_verifier_rejects_failed_task():
+    report = VerifierAgent().verify([TaskResult(task_id="search", status="failed", error="timeout")])
+    assert report["passed"] is False
+    assert "task_failed:search" in report["issues"]

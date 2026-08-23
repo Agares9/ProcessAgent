@@ -95,14 +95,46 @@ class LeadAgent:
 
 
 class VerifierAgent:
-    """Minimal deterministic gate; richer citation and numeric checks are added as Skills."""
+    """Deterministic evidence gate before synthesis."""
 
     def verify(self, results: list[Any]) -> dict[str, Any]:
-        issues = []
+        issues: list[str] = []
+        citation_errors: list[str] = []
         for result in results:
+            seen_chunks: set[str] = set()
             if getattr(result, "status", "") == "failed":
                 issues.append(f"task_failed:{getattr(result, 'task_id', '')}")
-        return {"passed": not issues, "score": 1.0 if not issues else 0.0, "issues": issues}
+            for artifact in getattr(result, "artifacts", []) or []:
+                if isinstance(artifact, dict):
+                    chunk_id = artifact.get("chunk_id", "")
+                    source_id = artifact.get("source_id", "")
+                    excerpt = artifact.get("excerpt", "")
+                    page_start = artifact.get("page_start")
+                else:
+                    chunk_id = getattr(artifact, "chunk_id", "")
+                    source_id = getattr(artifact, "source_id", "")
+                    excerpt = getattr(artifact, "excerpt", "")
+                    page_start = getattr(artifact, "page_start", None)
+                if not source_id:
+                    citation_errors.append(f"missing_source:{getattr(result, 'task_id', '')}")
+                if not chunk_id:
+                    citation_errors.append(f"missing_chunk:{getattr(result, 'task_id', '')}")
+                if not excerpt.strip():
+                    citation_errors.append(f"empty_excerpt:{chunk_id or source_id}")
+                if page_start is not None and (not isinstance(page_start, int) or page_start < 1):
+                    citation_errors.append(f"invalid_page:{chunk_id or source_id}")
+                if chunk_id and chunk_id in seen_chunks:
+                    citation_errors.append(f"duplicate_evidence:{chunk_id}")
+                if chunk_id:
+                    seen_chunks.add(chunk_id)
+        issues.extend(citation_errors)
+        passed = not issues
+        score = 1.0 if passed else max(0.0, 1.0 - min(len(issues) * 0.2, 1.0))
+        return {
+            "passed": passed, "score": score, "issues": issues,
+            "citation_errors": citation_errors,
+            "required_revisions": issues,
+        }
 
 
 class ExecutiveSynthesisAgent:
