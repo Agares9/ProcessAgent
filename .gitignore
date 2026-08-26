@@ -23,6 +23,12 @@ out/
 .env.local
 *.pem
 
+# Public templates and dependency manifests (intentionally tracked)
+# .env.example
+# services/pi-agent/.env.example
+# requirements.txt
+# backend/requirements.txt
+
 # Runtime and databases
 data/
 volumes/
@@ -31,7 +37,7 @@ local-data/
 *.db
 *.log
 
-# Local manufacturing source data and generated artifacts
+# Local knowledge sources and generated artifacts (kept private; never upload)
 文档/
 manufacturing-data/**
 

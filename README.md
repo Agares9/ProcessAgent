@@ -2,7 +2,7 @@
 
 ProcessAgent 是一个本地运行的通用企业场景决策 Agent。用户直接用自然语言描述问题，系统在多轮对话中识别行业、业务领域、企业事实、指标、目标和约束，并通过统一编排、知识检索、确定性计算和证据校验生成回答。
 
-当前基础领域包括制造、零售、运输、医药、能源、建筑和金融。行业差异通过元数据、领域处理器和 Skill 参数表达，不为每个问题创建永久 Agent。
+当前基础领域包括制造、零售、运输、医药、能源、建筑和金融。行业差异通过元数据、领域处理器和 Skill 参数表达
 
 ## 核心架构
 
@@ -205,7 +205,7 @@ ProcessAgent 默认采用本地数据存储和本地向量索引：
 
 ##### 第一轮
 
-![第一轮问答](D:/workfile/ProcessAgent/docs/assets/workflow.png)
+![第一轮问答](docs/assets/workflow.png)
 
 详细回答：
 
@@ -278,7 +278,7 @@ ProcessAgent 默认采用本地数据存储和本地向量索引：
 
 ##### 第二轮
 
-![第二轮问答](D:/workfile/ProcessAgent/docs/assets/knowledge-base.png)
+![第二轮问答](docs/assets/knowledge-base.png)
 
 ```
 用户> 工厂有12台180kW注塑机，每月生产20万件，设备每月运行720小时。
@@ -342,7 +342,7 @@ ProcessAgent 默认采用本地数据存储和本地向量索引：
 
 ##### 第三轮
 
-![第三轮问答](D:/workfile/ProcessAgent/docs/assets/cli-demo.png)
+![第三轮问答](docs/assets/cli-demo.png)
 
 ```
 用户> 最近三个月月用电量分别是96万、101万和110万kWh，单位产品能耗从4.8kWh/件上升到5.5kWh/件，电价0.82元/kWh。希望一年降低15%，预算300万元，两年内收回投资

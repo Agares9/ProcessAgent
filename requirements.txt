@@ -1,4 +1,5 @@
-# ProcessAgent backend runtime dependencies
+# ProcessAgent 2.0 backend runtime dependencies
+# This public manifest is intentionally versioned for reproducible setup.
 fastapi>=0.110,<1
 uvicorn[standard]>=0.29,<1
 pydantic>=2.6,<3
