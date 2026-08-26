@@ -17,7 +17,7 @@ def main() -> int:
     started = time.time()
     print(f"正在初始化模型: {args.model}")
     model = SentenceTransformer(args.model)
-    vector = model.encode(["制造业模型初始化测试"], normalize_embeddings=True)
+    vector = model.encode(["企业场景模型初始化测试"], normalize_embeddings=True)
     print(f"初始化完成，维度={vector.shape[1]}，耗时={time.time() - started:.2f}s")
     print("后续可将 EMBEDDING_LOCAL_ONLY=true 切换为严格离线运行。")
     return 0

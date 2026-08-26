@@ -7,12 +7,14 @@ import re
 from app.llm.embeddings import EmbeddingClient
 from app.retrieval.vector_store import VectorStore
 from app.storage.store import DataStore
+from app.harness.domain_skills import DOMAIN_HANDLERS
 
 
 class ManufacturingSkillAccess:
     """Skill gateway; callers never receive the underlying store or vector client."""
 
     ALLOWED_SKILLS = {
+        "retrieve", "understand", "analyze", "compare", "calculate", "optimize", "check", "verify",
         "search_manufacturing_knowledge",
         "search_case_studies",
         "get_document_evidence",
@@ -21,6 +23,9 @@ class ManufacturingSkillAccess:
         "extract_process_parameters", "check_applicability", "compare_technical_options",
         "calculate_project_financials", "calculate_energy_savings", "calculate_emission_reduction",
         "verify_citations", "check_constraint_compliance",
+        "search_knowledge", "extract_metrics", "compare_options",
+        "analyze_retail_inventory", "analyze_store_operations",
+        "analyze_transport_routes", "calculate_transport_cost",
     }
 
     def __init__(self, store: DataStore, vector_store: VectorStore, embeddings: EmbeddingClient) -> None:
@@ -29,12 +34,51 @@ class ManufacturingSkillAccess:
         self._embeddings = embeddings
 
     async def execute(self, skill: str, **kwargs: Any) -> Any:
+        operation = kwargs.pop("operation", None) or kwargs.get("analysis_type") or kwargs.get("calculation_type") or kwargs.get("optimization_type")
+        domain = kwargs.pop("domain", None)
+        if domain and domain not in DOMAIN_HANDLERS and kwargs.get("industry"):
+            domain = f"{kwargs['industry']}_{domain}"
+        if domain in DOMAIN_HANDLERS and skill in {"analyze", "understand", "calculate", "optimize", "check", "verify"}:
+            return DOMAIN_HANDLERS[domain](kwargs)
+        core_dispatch = {
+            "retrieve": "search_knowledge", "understand": "extract_process_parameters" if operation == "process_parameters" else "extract_metrics",
+            "analyze": "check_applicability" if operation in {None, "applicability"} else None, "compare": "compare_options",
+            "check": "check_constraint_compliance", "verify": "verify_citations",
+        }
+        if skill == "analyze" and core_dispatch["analyze"] is None:
+            return {"analysis_type": operation, "result": "需要领域处理器提供该分析类型", "missing": ["领域分析规则"], "data_schema": "analysis.v1"}
+        if skill == "calculate":
+            skill = {"energy_savings": "calculate_energy_savings", "emission_reduction": "calculate_emission_reduction", "financials": "calculate_project_financials", "transport_cost": "calculate_transport_cost"}.get(kwargs.pop("calculation_type", "financials"), "calculate_project_financials")
+        else:
+            skill = core_dispatch.get(skill, skill)
         if skill not in self.ALLOWED_SKILLS:
             raise PermissionError(f"skill not allowed: {skill}")
         return await getattr(self, skill)(**kwargs)
 
     async def search_manufacturing_knowledge(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         return await self._search(query, top_k=top_k)
+
+    async def search_knowledge(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        return await self._search(query, top_k=top_k)
+
+    async def extract_metrics(self, text: str) -> dict[str, Any]:
+        return {"metrics": {}, "missing": ["业务指标"], "source_type": "user_input", "source_text": text, "data_schema": "metrics.v1"}
+
+    async def compare_options(self, options: list[dict[str, Any]], criteria: dict[str, float] | None = None) -> dict[str, Any]:
+        return await self.compare_technical_options(options, criteria)
+
+    async def analyze_retail_inventory(self, **kwargs: Any) -> dict[str, Any]:
+        return {"industry": "retail", "analysis": "需要库存、销量、补货周期和缺货率数据", "missing": ["库存量", "销量", "补货周期"], "data_schema": "retail_inventory.v1"}
+
+    async def analyze_store_operations(self, **kwargs: Any) -> dict[str, Any]:
+        return {"industry": "retail", "analysis": "需要门店客流、转化率、坪效和毛利数据", "missing": ["客流", "转化率", "坪效"], "data_schema": "store_operations.v1"}
+
+    async def analyze_transport_routes(self, **kwargs: Any) -> dict[str, Any]:
+        return {"industry": "transport", "analysis": "需要路线里程、时效、装载率和油耗数据", "missing": ["里程", "装载率", "油耗"], "data_schema": "transport_routes.v1"}
+
+    async def calculate_transport_cost(self, distance: float = 0, fuel_rate: float = 0, fuel_price: float = 0, **kwargs: Any) -> dict[str, Any]:
+        cost = float(distance) * float(fuel_rate) * float(fuel_price)
+        return {"distance": float(distance), "fuel_rate": float(fuel_rate), "fuel_price": float(fuel_price), "fuel_cost": cost, "unit": "CNY", "data_schema": "transport_cost.v1"}
 
     async def search_case_studies(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         hits = await self._search(query, top_k=max(top_k * 3, 10))

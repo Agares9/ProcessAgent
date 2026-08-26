@@ -1,31 +1,38 @@
-# Harness 协同层（L2）
+# 通用场景编排层
 
-多智能体固定 DAG 编排（不依赖 LangChain/AutoGen）。
+Harness 是 ProcessAgent 的统一决策编排层，制造、零售、运输、医药、能源、建筑和金融都使用同一条入口。
 
-## 协作流程
+## 工作流
 
+```text
+ScenarioIntentAgent
+  → industry / domain / business_domain / scenario_type
+  → ScenarioSkillMatcher
+  → ScenarioOrchestratorFacade
+  → TaskExecutor
+  → 核心 Skill
+  → 领域处理器
+  → VerifierAgent / OrchestratorAgent
 ```
-Python Orchestrator → MemoryContext → pi Intent → pi Rewrite → Python Retrieval/Fact Plane → pi Answer → pi Verifier → Feedback
-```
 
-## 文件
+## 核心 Skill
 
-- `orchestrator.py` —— 总调度：构建记忆上下文、加载程序性记忆、检索官方事实、生成、校验和 trace 落库
-- `base.py` —— `Intent` / `Answer` / `Citation` / `VerificationResult` 类型
-- `agents/intent_agent.py` —— 意图/部门/身份/跨部门判断（LLM + 关键词回退）
-- `agents/query_rewriter.py` —— 补全/术语标准化/多 query（LLM + glossary 回退）
-- `agents/retrieval_agent.py` —— 混合检索执行（多 query × 多部门）
-- `agents/answer_agent.py` —— 带引用答案生成（LLM + 原文拼接回退）
-- `agents/verifier_agent.py` —— 校验（LLM + 启发式回退）
-- `agents/feedback_agent.py` —— 反馈收集写入队列
+对外只暴露 8 个稳定入口：
 
-## 设计要点
+`retrieve`、`understand`、`analyze`、`compare`、`calculate`、`optimize`、`check`、`verify`。
 
-- 每个 Agent 输入输出结构化，LLM 失败自动降级，系统不因模型不可用而崩溃。
-- 跨部门协同由 Intent 判断 + Hook 扩展部门范围，Retrieval 并行检索多部门。
-- 用户/会话/组织记忆经过 `MemoryContextBuilder` 选择性注入；只有事实平面 chunk 可以作为引用。
-- 无来源 FAQ 不允许直答；组织记忆命中后必须回查 active 文档版本并经过 Verifier。
-- Intent/Rewrite/Answer/Verifier 统一交给 pi Runtime 执行；Python 原实现作为故障降级。
-- Python 显式传入白名单 `allowed_tools`，pi 不能扩大工具权限或绕过事实检索。
-- `SkillExecutor` 在 Retrieval 前执行命中 workflow，可扩展 query/top-k、加入输出模板或校历约束；
-  `default_skills.py` 的基线 Skill 与 Loop 自动挖掘 Skill 走同一条执行路径。
+领域规则通过 `skill_registry.py` 注册，每个领域保持 1～2 个领域处理器。制造业旧 Skill 名称在网关中保留兼容映射，不参与新的规划协议。
+
+## 关键文件
+
+- `orchestrator.py`：统一 `ScenarioOrchestratorFacade` 和结果编排元数据
+- `agents/manufacturing_agents.py`：通用意图、上下文和任务规划，保留制造业兼容入口
+- `skill_registry.py`：核心 Skill 与领域注册表
+- `skill_matcher.py`：行业/领域到核心 Skill 的路由
+- `domain_skills.py`：各领域的确定性指标和业务规则
+- `manufacturing_skills.py`：受控 Skill 网关和兼容实现
+- `task_executor.py`：任务依赖、超时、核心 Skill 分发和 `TaskResult`
+
+## 兼容原则
+
+已有制造业脚本、测试和历史任务可以继续使用旧名称；新代码应使用核心 Skill，并通过 `calculation_type`、`analysis_type` 和场景上下文选择具体领域逻辑。

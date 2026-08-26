@@ -25,10 +25,11 @@ class TaskRegistry:
 class ManufacturingTaskExecutor:
     """Execute only registered tasks and only the Skills declared by each task."""
 
-    def __init__(self, registry: TaskRegistry, skill_gateway: Any, max_parallel: int = 4) -> None:
+    def __init__(self, registry: TaskRegistry, skill_gateway: Any, max_parallel: int = 4, max_retries: int = 1) -> None:
         self.registry = registry
         self.skill_gateway = skill_gateway
         self.max_parallel = max_parallel
+        self.max_retries = max(0, max_retries)
 
     async def execute(self, plan: AnalysisPlan, context: dict[str, Any]) -> list[TaskResult]:
         pending = {task.task_id: task for task in plan.tasks}
@@ -60,6 +61,8 @@ class ManufacturingTaskExecutor:
         self, task: AnalysisTask, context: dict[str, Any], completed: dict[str, TaskResult]
     ) -> TaskResult:
         handler = self.registry.get(task.task_id)
+        if handler is None and any(skill in {"retrieve", "understand", "analyze", "compare", "calculate", "optimize", "check", "verify"} for skill in task.allowed_skills):
+            handler = self.registry.get("core_skill")
         if handler is None:
             return TaskResult(task_id=task.task_id, status="failed", error="任务未注册")
         task_context = {
@@ -67,12 +70,20 @@ class ManufacturingTaskExecutor:
             "dependencies": {key: value.model_dump() for key, value in completed.items() if key in task.dependencies},
             "allowed_skills": list(task.allowed_skills),
         }
-        try:
-            return await asyncio.wait_for(handler(task, task_context), timeout=task.timeout_seconds)
-        except asyncio.TimeoutError:
-            return TaskResult(task_id=task.task_id, status="failed", error="任务执行超时")
-        except Exception as exc:  # noqa: BLE001
-            return TaskResult(task_id=task.task_id, status="failed", error=str(exc))
+        started = asyncio.get_running_loop().time()
+        last_error = ""
+        for attempt in range(self.max_retries + 1):
+            try:
+                result = await asyncio.wait_for(handler(task, task_context), timeout=task.timeout_seconds)
+                result.data.setdefault("execution", {"attempt": attempt + 1, "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000, 2)})
+                return result
+            except asyncio.TimeoutError:
+                last_error = "任务执行超时"
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+            if attempt < self.max_retries:
+                await asyncio.sleep(0.05 * (attempt + 1))
+        return TaskResult(task_id=task.task_id, status="failed", error=last_error, data={"execution": {"attempt": self.max_retries + 1, "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000, 2)}})
 
 
 def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
@@ -113,10 +124,31 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
             "citation_check": "verify_citations",
             "constraint_check": "check_constraint_compliance",
         }
-        skill = task.input_data.get("skill") or skill_map.get(task.task_id) or (task.allowed_skills[0] if task.allowed_skills else "")
+        requested_skill = task.input_data.get("skill") or skill_map.get(task.task_id) or (task.allowed_skills[0] if task.allowed_skills else "")
+        skill = requested_skill
+        # Core Skill contract: dispatch by typed operation while retaining legacy implementations.
+        operation = task.input_data.get("calculation_type") or task.input_data.get("analysis_type")
+        if skill == "retrieve": skill = "search_manufacturing_knowledge"
+        elif skill == "understand": skill = "extract_process_parameters" if operation in {None, "process_parameters"} else "extract_metrics"
+        elif skill == "analyze": skill = "check_applicability"
+        elif skill == "compare": skill = "compare_technical_options"
+        elif skill == "calculate":
+            skill = {"energy_savings": "calculate_energy_savings", "emission_reduction": "calculate_emission_reduction", "financials": "calculate_project_financials", "transport_cost": "calculate_project_financials"}.get(operation, "calculate_project_financials")
+        elif skill == "check": skill = "check_constraint_compliance"
+        elif skill == "verify": skill = "verify_citations"
         if not skill:
             return TaskResult(task_id=task.task_id, status="failed", error="任务未声明 Skill")
         kwargs = dict(task.input_data.get("kwargs") or {})
+        scenario_context = context.get("context") or {}
+        if scenario_context.get("domain"):
+            kwargs.setdefault("domain", scenario_context.get("domain"))
+        if scenario_context.get("industry"):
+            kwargs.setdefault("industry", scenario_context.get("industry"))
+        # Domain handlers consume normalized business facts directly.
+        if requested_skill in {"understand", "analyze", "compare", "calculate", "optimize", "check", "verify"}:
+            for key, value in (scenario_context.get("metrics") or {}).items():
+                kwargs.setdefault(key, value)
+            kwargs.setdefault("entities", scenario_context.get("entities", []))
         if skill == "extract_process_parameters":
             kwargs.setdefault("text", context.get("query", ""))
         elif skill == "check_applicability":
@@ -158,7 +190,15 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
         if missing:
             return TaskResult(task_id=task.task_id, status="skipped", summary="缺少计算输入", missing_information=missing)
         try:
-            value = await skill_gateway.execute(skill, **kwargs)
+            if requested_skill in {"retrieve", "understand", "analyze", "compare", "calculate", "optimize", "check", "verify"}:
+                core_kwargs = dict(kwargs)
+                if requested_skill == "calculate" and operation:
+                    core_kwargs.setdefault("calculation_type", operation)
+                if operation:
+                    core_kwargs.setdefault("operation", operation)
+                value = await skill_gateway.execute(requested_skill, **core_kwargs)
+            else:
+                value = await skill_gateway.execute(skill, **kwargs)
             data = value if isinstance(value, dict) else {"value": value}
             prior_sources = []
             for dependency in (context.get("dependencies") or {}).values():
@@ -168,8 +208,8 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
             if data.get("source_type"):
                 data.setdefault("source_chain", []).append(data["source_type"])
             return TaskResult(
-                task_id=task.task_id, status="completed", summary=f"Skill {skill} 执行完成", data=data,
-                data_schema=str(data.get("data_schema", f"{skill}.v1")),
+                task_id=task.task_id, status="completed", summary=f"Skill {requested_skill} 执行完成", data=data,
+                data_schema=str(data.get("data_schema", f"{requested_skill}.v1")),
                 sources=[str(x) for x in data.get("source_ids", [])] if isinstance(data, dict) else [],
             )
         except Exception as exc:  # noqa: BLE001
@@ -177,6 +217,7 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
 
     registry.register("knowledge_search", knowledge_search)
     registry.register("applicability_check", applicability_check)
+    registry.register("core_skill", skill_task)
     for task_id in (
         "case_study_search", "parameter_extraction", "applicability_analysis", "option_comparison",
         "financial_analysis", "energy_analysis", "carbon_analysis",

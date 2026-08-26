@@ -358,7 +358,12 @@ class Orchestrator:
                 "session_id": session_id,
                 "user_id": user_id,
                 "query": query,
-                "intent": {"type": intent_type, "depts": answer.dept_ids},
+                "intent": {"type": intent_type, "depts": answer.dept_ids,
+                           "industry": getattr(intent, "industry", ""),
+                           "domain": getattr(intent, "domain", ""),
+                           "business_domain": getattr(intent, "business_domain", ""),
+                           "scenario_type": getattr(intent, "scenario_type", "")},
+                "orchestration": {"version": "scenario.v1", "entrypoint": "ScenarioOrchestrator"},
                 "retrieved_chunks": chunks[:10],
                 "answer": answer.content,
                 "citations": [c.to_dict() for c in answer.citations],
@@ -409,14 +414,33 @@ class Orchestrator:
             "verification": answer.verification,
             "retrieved_count": len(chunks),
             "route": route,
+            "orchestration": {"version": "scenario.v1", "entrypoint": "ScenarioOrchestratorFacade"},
         }
 # CLI/runtime facade: existing Harness Orchestrator remains backward compatible.
-class ManufacturingOrchestratorFacade:
-    """Unified entry point for the manufacturing pipeline without CLI concerns."""
+class ScenarioOrchestratorFacade:
+    """Unified entry point for all industries; the pipeline supplies domain policy."""
 
     def __init__(self, pipeline: Callable[..., Awaitable[dict[str, Any]]]) -> None:
         self._pipeline = pipeline
 
     async def run(self, query: str, *, top_k: int = 5, profile: dict | None = None,
                   use_llm: bool = False, session_id: str = "", user_id: str = "") -> dict[str, Any]:
-        return await self._pipeline(query, top_k, profile, use_llm, session_id, user_id)
+        result = await self._pipeline(query, top_k, profile, use_llm, session_id, user_id)
+        if isinstance(result, dict):
+            intent = result.get("intent") or {}
+            orchestration = dict(result.get("orchestration") or {})
+            orchestration.update({
+                "version": "scenario.v1",
+                "entrypoint": "ScenarioOrchestratorFacade",
+                "industry": intent.get("industry", ""),
+                "domain": intent.get("domain", ""),
+                "business_domain": intent.get("business_domain", ""),
+                "scenario_type": intent.get("scenario_type", ""),
+                "matched_skills": result.get("matched_skills", []),
+            })
+            result["orchestration"] = orchestration
+        return result
+
+
+# Backward-compatible name for existing manufacturing integrations.
+ManufacturingOrchestratorFacade = ScenarioOrchestratorFacade

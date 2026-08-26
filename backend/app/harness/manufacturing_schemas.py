@@ -1,20 +1,25 @@
-"""Structured contracts for the five manufacturing workflow agents."""
+"""兼容制造业的通用场景决策数据契约。"""
 from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class ManufacturingIntent(BaseModel):
+class ScenarioIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     intent_type: str = "general_manufacturing"
-    domain: Literal["manufacturing", "capability", "general_chat", "out_of_scope"] = "manufacturing"
+    industry: str = "manufacturing"
+    domain: str = "manufacturing"
+    business_domain: str = "general"
+    scenario_type: str = "optimization"
     response_mode: Literal["analysis", "capability_info", "boundary_redirect"] = "analysis"
     complexity: Literal["simple", "standard", "complex"] = "standard"
     objectives: list[str] = Field(default_factory=list)
     industries: list[str] = Field(default_factory=list)
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
     processes: list[str] = Field(default_factory=list)
     materials: list[str] = Field(default_factory=list)
     equipment: list[str] = Field(default_factory=list)
@@ -24,6 +29,27 @@ class ManufacturingIntent(BaseModel):
     needs_clarification: bool = False
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     raw: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _compatibility_mapping(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        value = dict(data)
+        # Accept both old plural manufacturing fields and the new generic names.
+        if not value.get("industry") and value.get("industries"):
+            value["industry"] = value["industries"][0]
+        if not value.get("entities"):
+            entities = []
+            for key in ("processes", "equipment", "materials"):
+                for item in value.get(key, []) or []:
+                    entities.append({"type": key[:-1], "name": item})
+            value["entities"] = entities
+        return value
+
+
+# Public compatibility name retained for existing integrations and tests.
+ManufacturingIntent = ScenarioIntent
 
 
 class ContextFact(BaseModel):
@@ -44,6 +70,15 @@ class EnterpriseContext(BaseModel):
     workspace_id: str = "default_company"
     company_name: str | None = None
     industries: list[str] = Field(default_factory=list)
+    industry: str | None = None
+    domain: str | None = None
+    scenario_type: str | None = None
+    entities: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    stores: list[dict[str, Any]] = Field(default_factory=list)
+    warehouses: list[dict[str, Any]] = Field(default_factory=list)
+    vehicles: list[dict[str, Any]] = Field(default_factory=list)
+    routes: list[dict[str, Any]] = Field(default_factory=list)
     factories: list[dict[str, Any]] = Field(default_factory=list)
     products: list[str] = Field(default_factory=list)
     processes: list[str] = Field(default_factory=list)

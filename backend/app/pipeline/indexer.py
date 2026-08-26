@@ -55,7 +55,7 @@ class Indexer:
         self.metadata_extractor = MetadataExtractor(llm) if llm is not None else None
         self.organization_memory = None
 
-    async def ingest(self, file_path: Union[str, Path], dept_id: str, uploaded_by: str = "system") -> dict[str, Any]:
+    async def ingest(self, file_path: Union[str, Path], dept_id: str, uploaded_by: str = "system", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         file_path = Path(file_path)
         if not file_path.exists():
             raise FileNotFoundError(f"文件不存在: {file_path}")
@@ -81,6 +81,8 @@ class Indexer:
         meta: dict[str, Any] = {"effective_date": None, "doc_type": "other", "keywords": [], "applicable_scope": ["all"], "cross_refs": []}
         if self.metadata_extractor is not None:
             meta = await self.metadata_extractor.extract(cleaned.title, cleaned.text)
+        supplied_meta = dict(metadata or {})
+        meta.update({key: value for key, value in supplied_meta.items() if value is not None})
 
         # 同部门同标题视为版本更新；以最近创建的版本为直接前驱。
         same_title = [d for d in dept_docs if d.get("title") == cleaned.title and d.get("status") != "deleted"]
@@ -138,6 +140,7 @@ class Indexer:
                     "keywords": extract_keywords(content),
                     "metadata": chunk["metadata"],
                 }
+                chunk_doc["metadata"].update({key: value for key, value in supplied_meta.items() if key not in {"keywords", "cross_refs"}})
                 stored_chunks.append(chunk_doc)
                 await self.vector_store.add(
                     chunk_id, vectors[i],

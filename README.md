@@ -1,360 +1,195 @@
 # ProcessAgent
 
-ProcessAgent 是一个面向制造业场景的本地知识增强多智能体问答系统。用户可以直接描述企业、工厂、设备、工艺、能耗、质量或合规问题，系统会结合当前对话中的上下文和制造业知识库，完成问题识别、证据检索、计算分析、方案组织和最终回答。
+ProcessAgent 是一个本地运行的通用企业场景决策 Agent。用户直接用自然语言描述问题，系统在多轮对话中识别行业、业务领域、企业事实、指标、目标和约束，并通过统一编排、知识检索、确定性计算和证据校验生成回答。
 
-项目当前以命令行版本为主，后续可继续接入 Web/API 界面。
+当前基础领域包括制造、零售、运输、医药、能源、建筑和金融。行业差异通过元数据、领域处理器和 Skill 参数表达，不为每个问题创建永久 Agent。
 
-## 当前功能
+## 核心架构
 
-- 通过**意图识别**判断问题范围、复杂度、目标和缺失信息。
-- 支持简单、标准、复杂三种任务路径。
-- **支持多轮对话，逐步记忆用户提供的企业、工厂、设备和工艺事实**。
-- 从本地 SQLite 文档库和 Chroma 向量库检索标准、指南和案例。
-- 使用**本地 `BAAI/bge-small-zh-v1.5` 模型生成向量**，避免每次向量化都访问外部服务。
-- 通过 DeepSeek 进行意图判断、任务规划和最终回答组织。
-- **支持工艺参数提取、技术适用性判断、方案比较、节能量、碳减排量和投资收益计算。**
-- **对证据来源、文档编号、页码和计算链进行校验和追踪。**
+```text
+用户问题 → 会话记忆 → ScenarioIntentAgent
+  → 行业/业务领域/场景路由 → ScenarioOrchestratorFacade
+  → 8 个核心 Skill → 领域处理器 → 校验与自然语言回答
+```
 
-## 项目结构
+核心 Skill 固定为：
+
+```text
+retrieve   检索知识与证据
+understand 提取实体、指标和参数
+analyze    分析问题、适用性和风险
+compare    比较方案、路线或选项
+calculate  成本、收益、能源和排放计算
+optimize   资源、流程、库存或路线优化
+check      约束、合规和安全检查
+verify     引用、证据和计算结果校验
+```
+
+制造业旧类名和旧 Skill 名称仍保留兼容入口；新编排统一使用通用 `ScenarioOrchestratorFacade` 和核心 Skill。
+
+## 目录结构
 
 ```text
 ProcessAgent/
-├── backend/
-│   ├── app/
-│   │   ├── harness/          # 意图识别、任务编排、Skills、验证和回答层
-│   │   ├── memory/           # 工作记忆、会话摘要和用户事实记忆
-│   │   ├── llm/              # DeepSeek 和本地 Embedding 客户端
-│   │   ├── pipeline/         # 文档解析、清洗、切分和入库
-│   │   ├── retrieval/        # BM25、向量检索和混合检索
-│   │   ├── storage/          # SQLite、MongoDB、Redis 存储适配
-│   │   └── api/              # 预留的 FastAPI 接口
-│   ├── scripts/              # 初始化模型、导入知识库和命令行运行脚本
-│   └── tests/                # 单元测试和流程测试
-├── manufacturing-data/       # 已整理的制造业 PDF 和结构化文档
-├── local-data/
-│   ├── processagent.db       # 本地文档、分块和会话数据
-│   └── chroma/               # 本地向量索引
-├── 文档/                     # 项目计划、迁移记录和技术说明
-├── requirements.txt
-└── .env.example
+├── backend/app/harness/      # 通用意图、编排、Skill 和领域处理器
+├── backend/app/memory/       # 会话、用户和企业事实记忆
+├── backend/app/pipeline/     # 文档解析、切分和索引
+├── backend/app/retrieval/    # BM25、向量和混合检索
+├── backend/app/storage/      # SQLite 等本地存储
+├── backend/scripts/           # CLI 与数据处理脚本
+├── backend/tests/             # 单元和工作流测试
+├── manufacturing-data/       # 当前本地知识资料
+└── local-data/               # SQLite 与 Chroma 本地数据
 ```
-
-## 工作流程
-
-```text
-用户问题
-  ↓
-意图识别与复杂度判断
-  ↓
-提取当前轮事实，并合并已确认的会话上下文
-  ↓
-选择简单 / 标准 / 复杂任务路径
-  ↓
-LeadAgent 规划任务，Skills 执行检索、计算和适用性分析
-  ↓
-VerifierAgent 检查证据、来源、页码和计算结果
-  ↓
-统一编排与回答层组织自然语言回答
-  ↓
-保存会话摘要和用户明确提供的事实
-```
-
-可以把企业名称、工厂数量、设备参数、产量和能耗等信息可以在对话中逐步提供，并作为当前会话的上下文使用。
-
-## 知识库准备
-
-**原始文档位于`./文档`/下**，由人工整理放入，后续计划升级为自动对新加入的文档处理，现在仍是手动处理，格式化处理后输出到`./manufacturing-data/`
-
-将制造业标准、行业指南和案例分析 PDF 位于 `manufacturing-data/`，先完成文本解析、清洗、分块和元数据整理，再执行本地入库。每个文档应尽量保留：
-
-- 文档名称、来源机构、发布日期和语言
-- 页码、章节和原文片段
-- 行业、工艺、设备、能源和环保等主题标签
-- 案例适用条件、指标口径和限制说明
-
-入库后，原始文档和检索证据均保留来源信息。外部案例只能作为参考证据，不能直接当作当前企业的实际结果。
 
 ## 本地运行
 
 ```powershell
-cd \ProcessAgent\backend
+conda activate medix-swarm
+cd D:\workfile\ProcessAgent
+python -m pip install -r requirements.txt
+cd backend
 python -m scripts.run_manufacturing_agents
 ```
 
-首次部署可初始化本地 Embedding 模型：
+直接传入问题：
 
 ```powershell
-python -m scripts.init_local_models
+python -m scripts.run_manufacturing_agents "某零售门店库存周转率低，如何分析"
 ```
 
-DeepSeek 配置写入项目根目录 `.env`：
+## 验证
 
-```env
-LLM_API_KEY=你的密钥
-LLM_MODEL_NAME=deepseek-v4-flash
-LLM_BASE_URL=https://api.deepseek.com
-PROCESSAGENT_USE_LLM=true
+```powershell
+conda activate medix-swarm
+cd D:\workfile\ProcessAgent
+python -m pytest backend/tests/test_scenario_routing.py backend/tests/test_task_executor.py -q
 ```
 
-## 数据私有
-
-项目支持私有数据部署。知识库原文、SQLite 数据、Chroma 向量索引和会话记忆默认保存在本机 `manufacturing-data/` 和 `local-data/`，不会自动上传到第三方知识库服务。DeepSeek 调用只发送当前任务所需的用户问题、必要上下文和检索证据；如果企业要求完全离线，需要将回答模型替换为本地大模型，并关闭外部 LLM 配置。
-
-生产部署前仍应根据企业要求补充磁盘加密、访问控制、日志脱敏、备份策略和网络出口管理。
-
-## 当前边界
-
-- 当前重点是本地 CLI 和 RAG/Agent 主流程。
-- Web 前端、正式 API、流式输出和生产级权限体系尚未作为当前 CLI 的必要前提。
-- 多租户隔离、企业级权限和完全离线大模型属于后续部署增强项。
-
-## 存在问题与未来优化方向
-
-未来可以重点升级这些部分：
-
-  1. 意图识别
-     
-      - 支持更复杂的多轮问题合并。
-      
-  2. 上下文与记忆
-      - 将用户事实、助手回答、检索证据彻底分层存储。
-      - 支持会话级、用户级、企业级记忆。
-      - 增加记忆有效期、修正和删除机制。
-      
-  3. 知识库与检索
-      - 增加文档版本管理和标准失效提醒。
-      - 完善行业、工艺、设备、指标等元数据。
-      - 引入更强的混合检索和重排序模型。
-      - 支持表格、流程图和扫描 PDF 的结构化解析。
-      
-  4. Agent 编排
-      - 当前代码不够简洁
-      - 记录每个 Agent 和 Skill 的耗时、成功率及调用成本。
-      
-      
-
-  6. 数据私有与安全
-      - 增加企业级权限和数据分区。
-      - 支持完全离线模型。
-      - 对发送给 DeepSeek 的内容进行脱敏和最小化处理。
-      - 增加数据库加密、日志脱敏、备份和审计。
-      - 后续实现严格的多企业数据隔离。
-
-  7. 产品化
-      - 接入 Web/API 和流式输出。
-      - 展示 Agent 执行阶段、进度和引用来源。
-      - 支持文档上传、重新解析和知识库管理。
-      - 增加企业、工厂、设备和工艺的可视化管理。
-      - 提供方案导出为 Word、PDF 或 Excel。
-
-  8. 评测与运维
-      - 建立制造业问题测试集。
-      - 评估意图准确率、检索命中率、回答完整性和引用正确率。
-      - 增加日志监控、性能监控和告警。
+Embedding、SQLite、Chroma 和知识资料默认保留在本机。当前版本是可运行的通用编排基础版本；跨行业知识元数据、完整行业规则、系统性行业评测和生产级监控仍在建设中。
 
 # agent功能梳理
 
-| Agent                    | 作用                                                         | 是否使用知识库               |
-| ------------------------ | ------------------------------------------------------------ | ---------------------------- |
-| ManufacturingIntentAgent | 识别用户问题属于制造业分析、能力询问、闲聊还是范围外问题；判断复杂度、目标、行业、工艺、设备和缺失信息 | 否                           |
-| EnterpriseContextAgent   | 将用户在对话中提供的企业、工厂、设备、工艺、产量、能耗等信息整 理成当前问题上下文 | 否                           |
-| LeadAgent                | 针对标准和复杂问题拆解任务，决定需要检索、计算、方案比较、适用 性判断等工作 | 间接，通过任务规划调用 Skill |
-| VerifierAgent            | 检查任务结果、证据来源、文档编号、页码、原文片段和计算结果是否完整可靠 | 不主动检索，负责校验结果     |
-| OrchestratorAgent        | 统一总调度，组织任务执行结果，调用最终大模型生成自然语言回答，并决定回答重点、长度和是否提示补充信息 | 间接，汇总检索和 Skill 结果  |
+| Agent | 作用 | 是否使用知识库 |
+| --- | --- | --- |
+| ScenarioIntentAgent | 识别行业、业务领域、场景类型、目标、约束、复杂度和缺失信息；区分能力询问、闲聊和业务问题 | 否 |
+| EnterpriseContextAgent | 将用户在多轮对话中提供的企业、门店、仓库、车辆、工厂、设备、流程和指标整理为场景上下文 | 否 |
+| LeadAgent | 根据问题复杂度和场景生成任务依赖，决定需要哪些核心 Skill | 间接，通过任务规划调用 Skill |
+| VerifierAgent | 检查任务结果、证据来源、文档编号、页码、原文片段和计算结果 | 不主动检索，负责校验结果 |
+| OrchestratorAgent | 汇总任务和领域处理器结果，组织自然语言回答，并记录编排信息和执行 Trace | 间接，汇总检索和 Skill 结果 |
 
 # skills功能梳理
 
-### 1. 知识检索类
+### 1. 核心 Skill
 
- 
+| Skill | 作用 |
+| --- | --- |
+| retrieve | 统一检索知识、案例和文档证据，返回来源、chunk 和页码 |
+| understand | 提取企业实体、业务指标、工艺参数和缺失信息 |
+| analyze | 分析问题、趋势、根因、适用性、风险和合规条件 |
+| compare | 比较技术方案、供应商、路线或经营选项 |
+| calculate | 通过 `calculation_type` 计算成本、收益、能源、排放、运输和 ROI |
+| optimize | 优化库存、流程、设备、资源、排班或运输路线 |
+| check | 检查预算、回收期、质量、安全、法规和其他约束 |
+| verify | 校验引用、证据、版本和计算结果 |
 
-| Skill                          | 作用                                                         |
-| ------------------------------ | ------------------------------------------------------------ |
-| search_manufacturing_knowledge | 从 SQLite 文档元数据和 Chroma 向量库检索制造业标准、指南和技术资料 |
-| search_case_studies            | 检索制造业案例，优先筛选 doc_type=case_study 的文档          |
-| get_document_evidence          | 根据 chunk_id 获取原始摘录、文档、页码和来源信息             |
+典型流程：
 
-```
-  典型流程：
-
-  用户问题
-  → 向量检索
-  → 返回 Chunk
-  → 根据 Chunk 获取原始证据
-  → 交给 Verifier 检查
-```
-
-  这些 Skill 的重点是：
-
-  - 不让 Agent 直接操作数据库
-  - 不让模型自己编造来源
-  - 返回 source_id/chunk_id/page_start/page_end
-  - 证据可以回溯到原始文档
-
-  ### 2. 企业和场景上下文类
-
-| Skill                   | 作用                             |
-| ----------------------- | -------------------------------- |
-| get_enterprise_profile  | 获取当前对话中已经确认的企业信息 |
-| get_factory_process_map | 获取工厂、产线、工艺之间的关系   |
-|                         |                                  |
-
-```
-  目标是让系统理解：
-
-  企业
-  → 工厂
-  → 产线
-  → 设备
-  → 工艺
-  → 能耗/质量问题
+```text
+用户问题
+→ ScenarioIntentAgent 识别行业和业务领域
+→ ScenarioSkillMatcher 选择核心 Skill
+→ TaskExecutor 执行核心 Skill 和领域处理器
+→ VerifierAgent 校验证据与计算
+→ OrchestratorAgent 组织回答
 ```
 
-  当前项目还没有正式的企业数据库，因此这两个 Skill 目前只能返回基础结构，实际上下文主要来自：
+### 2. 领域处理器
 
-  - 用户自然语言
-  - EnterpriseContextAgent
-  - 当前会话记忆
-  - 可选的 profile JSON
+领域处理器不是独立 Agent，而是由核心 Skill 调用的行业规则和指标实现。当前每个细分领域保持 1～2 个处理器：
 
-  ### 3. 工艺分析类
+| 行业 | 领域处理器 |
+| --- | --- |
+| 制造 | `manufacturing_process`、`manufacturing_equipment` |
+| 零售 | `retail_inventory`、`retail_store` |
+| 运输 | `transport_fleet`、`transport_route` |
+| 医药 | `pharma_quality`、`pharma_compliance` |
+| 能源 | `energy_asset`、`energy_emissions` |
+| 建筑 | `construction_project`、`construction_safety` |
+| 金融 | `finance_operations`、`finance_risk_compliance` |
 
-| Skill                       | 作用                                                   |
-| --------------------------- | ------------------------------------------------------ |
-| extract_process_parameters  | 从用户问题、文档或案例中提取工艺参数和运行             |
-| check_applicability         | 判断某项技术措施是否适合当前工艺、设备和约束           |
-| check_constraint_compliance | 检查方案是否满足预算、回收期、产能、质量安全和法规约束 |
+### 3. 兼容入口
 
-```
-  extract_process_parameters 的目标输出例如：
+旧制造业 Skill 名称仍可调用，但只用于兼容历史任务和测试：
 
-  {
-    "process": "注塑",
-    "parameters": {
-      "temperature": {
-        "value": 220,
-        "unit": "摄氏度"
-      },
-      "pressure": {
-        "value": 80,
-        "unit": "MPa"
-      },
-      "cycle_time": {
-        "value": 45,
-        "unit": "s"
-      }
-    },
-    "source": "user_input",
-    "confidence": 0.91,
-    "missing": ["冷却时间"]
-  }
+| 旧名称 | 核心 Skill |
+| --- | --- |
+| `search_manufacturing_knowledge` | `retrieve` |
+| `extract_process_parameters` | `understand` |
+| `check_applicability` | `analyze` |
+| `compare_technical_options` | `compare` |
+| `calculate_energy_savings` | `calculate` |
+| `verify_citations` | `verify` |
 
-  check_applicability 的目标输出例如：
+新代码和新任务规划应使用 8 个核心 Skill，并通过 `operation`、`analysis_type` 或 `calculation_type` 指定具体动作。
 
-  {
-    "applicable": true,
-    "conditions": [
-      "设备具备变频控制能力",
-      "当前负载率存在较大波动"
-    ],
-    "limitations": [
-      "需要确认工艺压力稳定性"
-    ],
-    "confidence": 0.82
-  }
-```
+## 数据私有
 
+ProcessAgent 默认采用本地数据存储和本地向量索引：
 
+- 原始知识文档保留在本机，不自动上传到第三方知识库。
+- SQLite、Chroma 和会话记忆默认保存在项目的 `local-data/` 目录。
+- 用户事实、企业上下文、检索证据和计算结果按不同来源记录。
+- 未配置外部 LLM 时，可以使用确定性回退逻辑运行基础流程。
+- 配置外部模型时，仅发送当前任务所需的问题、必要上下文和检索证据。
 
-  ### 4. 方案比较和计算类
+生产部署仍应根据企业安全要求补充磁盘加密、访问控制、日志脱敏、备份恢复、网络出口控制和多租户数据隔离。
 
-| Skill                        | 作用                                                   |
-| ---------------------------- | ------------------------------------------------------ |
-| compare_technical_options    | 比较多个技术方案的成本、收益、风险、适用条件和实施难度 |
-| calculate_project_financials | 计算投资、年度节省、回收期、净现值和敏感性             |
-| check_constraint_compliance  | 检查方案是否满足预算、回收期、产能、质量安全和法规约束 |
+## 当前边界
 
-```
-  技术方案比较应输出结构化结果：
+- 当前重点是本地 CLI 和通用 RAG/Agent 主流程。
+- 各行业领域处理器已经具备基础可执行逻辑，但部分复杂业务规则仍在完善。
+- 跨行业知识库元数据过滤、版本失效治理和完整行业资料建设尚未全部完成。
+- Web、正式 API、可视化管理和生产级权限体系不作为 CLI 运行前提。
+- 当前测试覆盖核心路由和执行链路，尚未完成所有行业的系统性问题集验收。
 
-  {
-    "options": [
-      {
-        "name": "变频改造",
-        "capex": 800000,
-        "annual_saving": 260000,
-        "payback_years": 3.08,
-        "risk": "中",
-        "applicability": "适合负荷波动设备"
-      }
-    ],
-    "recommended_option": "变频改造",
-    "reason": "在预算和改造窗口约束下综合得分最高"
-  }
+## 未来优化方向
 
-财务计算 Skill 必须是确定性代码，不应让 LLM 直接计算：
+### 1. 意图识别与路由
 
-  年度节省 = 节能量 × 能源单价
-  回收期 = 初始投资 ÷ 年度净收益
-  净收益 = 年度节省 - 年运维成本
+- 增加低置信度分类复核。
+- 更准确地区分新问题和补充上一轮信息。
+- 扩展行业、业务领域、对象、指标和场景类型识别。
 
-```
+### 2. 上下文与记忆
 
+- 完善门店、库存、车辆、路线、批次、能源资产、建筑项目和金融主体记忆。
+- 分离用户事实、助手回答、检索证据、计算结果和模型推断。
+- 增加事实来源、置信度、有效期、修正和删除机制。
 
+### 3. 核心 Skill 与领域逻辑
 
-  ### 5. 验证和治理类
+- 继续统一 8 个核心 Skill 的输入、输出、单位和错误协议。
+- 增强零售补货、运输路线、医药 GMP、能源项目、建筑风险和金融合规逻辑。
+- 为领域处理器补充可复核的计算公式和业务约束。
 
-| Skill                       | 作用                                     |
-| --------------------------- | ---------------------------------------- |
-| verify_citations            | 检查结论是否有有效来源、Chunk 和页码支撑 |
-| check_constraint_compliance | 检查最终方案是否违反用户约束             |
-|                             |                                          |
+### 4. 知识库与检索
 
-```
-  当前 VerifierAgent 已经能做部分确定性检查：
+- 增加行业、领域、对象、流程、指标、来源机构、适用地区和有效期过滤。
+- 完善文档版本链、替代标准、失效文档降权和增量更新。
+- 建立零售、运输、医药、能源、建筑和金融知识包。
 
-  - 任务是否失败
-  - 是否有 source_id
-  - 是否有 chunk_id
-  - 是否有页码
-  - 摘录是否为空
-  - 是否重复使用同一证据
+### 5. 可靠性与评测
 
-  后续将这些能力统一封装成 Skill，便于：
+- 增加 Skill 超时、重试、降级和依赖失败处理。
+- 建立跨行业意图、路由、计算、记忆、引用和检索评测集。
+- 记录 Agent/Skill 耗时、失败率、检索质量和调用成本。
 
-  VerifierAgent
-  → 调用 verify_citations
-  → 调用 check_constraint_compliance
-  → 输出统一验证结果
-```
+### 6. 产品化
 
-
-
- ## 当前设计如何控制速度
-
-```
-  simple
-  → 跳过 LeadAgent
-  → 只做一次检索
-
-  standard
-  → 保留 LeadAgent
-  → 执行有限任务
-
-  complex
-  → 执行完整分析
-  → 无依赖任务并行
-```
-
-  因此不能让 LeadAgent 每次都规划所有 Skill，而应该让它根据复杂度选择：
-
-| 复杂度   | 调用的 Skill                                             |
-| -------- | -------------------------------------------------------- |
-| simple   | 一个知识检索 Skill                                       |
-| standard | 知识检索 + 案例检索 + 适用性判断                         |
-| complex  | 检索、参数、适用性、方案比较、财务、碳排、约束和引用验证 |
-
-
+- 让 CLI、API 和 Web 共用同一套 `ScenarioOrchestratorFacade`。
+- 增加流式进度、执行 Trace、来源展示和结果导出。
+- 提供文档上传、重新解析、知识库管理和企业场景可视化能力。
 
 # 运行示例
 
@@ -368,11 +203,9 @@ PROCESSAGENT_USE_LLM=true
   300万元，两年内收回投资。
 ```
 
-![CLI运行示例](docs/assets/runtime.png)
-
 ##### 第一轮
 
-![第一轮问答](docs/assets/workflow.png)
+![第一轮问答](D:/workfile/ProcessAgent/docs/assets/workflow.png)
 
 详细回答：
 
@@ -445,7 +278,7 @@ PROCESSAGENT_USE_LLM=true
 
 ##### 第二轮
 
-![第二轮问答](docs/assets/knowledge-base.png)
+![第二轮问答](D:/workfile/ProcessAgent/docs/assets/knowledge-base.png)
 
 ```
 用户> 工厂有12台180kW注塑机，每月生产20万件，设备每月运行720小时。
@@ -509,7 +342,7 @@ PROCESSAGENT_USE_LLM=true
 
 ##### 第三轮
 
-![第三轮问答](docs/assets/cli-demo.png)
+![第三轮问答](D:/workfile/ProcessAgent/docs/assets/cli-demo.png)
 
 ```
 用户> 最近三个月月用电量分别是96万、101万和110万kWh，单位产品能耗从4.8kWh/件上升到5.5kWh/件，电价0.82元/kWh。希望一年降低15%，预算300万元，两年内收回投资
@@ -631,3 +464,4 @@ PROCESSAGENT_USE_LLM=true
 
 如需进一步细化方案，建议提供：主要耗能设备清单、生产班次与产量数据、是否使用压缩空气、配电系统基本情况等信息。
 ```
+

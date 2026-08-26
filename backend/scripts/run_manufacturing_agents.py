@@ -31,8 +31,8 @@ from app.memory.organization import OrganizationMemory
 from app.memory.learning import LearningMemory
 from app.memory.context_builder import MemoryContextBuilder
 from app.harness.manufacturing_schemas import AnalysisPlan, AnalysisTask
-from app.harness.skill_matcher import ManufacturingSkillMatcher
-from app.harness.orchestrator import ManufacturingOrchestratorFacade
+from app.harness.skill_matcher import ScenarioSkillMatcher
+from app.harness.orchestrator import ScenarioOrchestratorFacade
 
 
 def route_scope(query: str) -> str:
@@ -60,15 +60,15 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
     scope = route_scope(query)
     if scope in {"out_of_scope", "general_chat", "capability"}:
         capability_answer = (
-            "我可以帮助分析制造业的工艺、设备、能源、质量和企业运营问题。"
-            "具体包括：检索制造业标准和案例，提取工艺参数，判断技术方案适用性，"
-            "比较候选方案，计算节能量、碳减排量和投资回收期，并给出实施路线、风险和所需补充数据。"
-            "你可以直接描述一个生产或管理问题，我会先基于已有资料回答，信息不足时再追问必要条件。"
+            "我可以帮助分析制造、零售、运输、医药、能源、建筑、金融等企业场景。"
+            "具体包括：检索相关知识和案例，提取实体与指标，判断方案适用性，"
+            "比较候选方案，计算成本、收益、能源和风险指标，并给出实施建议和所需补充数据。"
+            "你可以直接描述一个业务问题，我会先基于已有资料回答，信息不足时再追问必要条件。"
         )
         return {
             "query": query,
-            "route": {"scope": scope, "response_mode": "capability_info" if scope == "capability" else "boundary_redirect", "reason": "未进入制造业知识库"},
-            "answer": capability_answer if scope == "capability" else ("你好，我主要用于制造业工艺、设备、能源、质量和企业运营问题分析。请告诉我需要解决的生产或管理问题。" if scope == "general_chat" else "我主要用于制造业工艺、设备、能源、质量和企业运营问题分析。这个问题不属于当前场景范围。"),
+            "route": {"scope": scope, "response_mode": "capability_info" if scope == "capability" else "boundary_redirect", "reason": "未进入企业场景知识库"},
+            "answer": capability_answer if scope == "capability" else ("你好，我可以协助分析企业经营、生产、供应链、风险和合规问题。请告诉我需要解决的具体场景。" if scope == "general_chat" else "这个问题不属于当前企业场景范围。你可以描述制造、零售、运输、医药、能源、建筑或金融相关问题。"),
         }
     settings = Settings(
         storage_mode="sqlite", sqlite_path="../local-data/processagent.db",
@@ -108,7 +108,7 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
         if baseline.domain == "manufacturing" and has_current_facts:
             intent = baseline
     if intent.domain in {"capability", "general_chat", "out_of_scope"}:
-        answer = ("我可以帮助分析制造业的工艺、设备、能源、质量和企业运营问题，并结合知识库给出措施、风险和实施建议。您可以直接描述一个生产或管理问题。" if intent.domain == "capability" else "你好，我主要用于制造业工艺、设备、能源、质量和企业运营问题分析。" if intent.domain == "general_chat" else "我主要用于制造业工艺、设备、能源、质量和企业运营问题分析。这个问题不属于当前场景范围。")
+        answer = ("我可以帮助分析制造、零售、运输、医药、能源、建筑、金融等企业场景，并结合知识库给出措施、风险和实施建议。您可以直接描述一个业务问题。" if intent.domain == "capability" else "你好，我可以协助分析企业经营、生产、供应链、风险和合规问题。" if intent.domain == "general_chat" else "这个问题不属于当前企业场景范围。你可以描述制造、零售、运输、医药、能源、建筑或金融相关问题。")
         return {"query": query, "route": {"scope": intent.domain, "response_mode": intent.response_mode}, "intent": intent.model_dump(), "answer": answer}
     # Merge facts already confirmed in prior turns without requiring a separate profile.
     previous_entities = memory_context.session.get("entities") or {}
@@ -121,16 +121,22 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
         context.assumptions.append("已注入历史会话记忆")
     if complexity == "simple":
         plan = AnalysisPlan(tasks=[AnalysisTask(
-            task_id="knowledge_search", title="快速检索制造业知识", objective="检索直接相关的标准和案例",
+            task_id="knowledge_search", title="快速检索相关知识", objective="检索直接相关的标准和案例",
             role="evidence_search", priority=1,
-            allowed_skills=["search_manufacturing_knowledge", "get_document_evidence"],
+            allowed_skills=["retrieve"], input_data={"skill": "retrieve"},
             completion_criteria=["返回相关证据"],
         )], assumptions=context.assumptions, missing_information=context.missing_information)
     else:
         plan = await LeadAgent().plan_async(intent, context, llm=llm)
-    matched_skills = ManufacturingSkillMatcher().match(query, intent)
+    matched_skills = ScenarioSkillMatcher().match(query, intent)
     existing = {skill for task in plan.tasks for skill in task.allowed_skills}
     task_specs = {
+        "understand": ("parameter_extraction", "提取业务指标和参数"),
+        "analyze": ("applicability_analysis", "分析场景适用性"),
+        "compare": ("option_comparison", "比较候选方案"),
+        "calculate": ("financial_analysis", "计算经营与项目指标"),
+        "check": ("constraint_check", "检查约束与合规"),
+        "verify": ("citation_check", "验证证据与引用"),
         "extract_process_parameters": ("parameter_extraction", "提取工艺参数"),
         "check_applicability": ("applicability_analysis", "判断方案适用性"),
         "compare_technical_options": ("option_comparison", "比较技术方案"),
@@ -167,7 +173,7 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
     missing = list(dict.fromkeys(context.missing_information))
     response_mode = "answer_then_clarify" if missing else "complete_analysis"
     followup_map = {
-        "用户具体需求领域": "您更关注制造工艺、能源消耗、质量控制，还是环保合规？",
+        "用户具体需求领域": "您更关注生产、经营、供应链、能源、质量、风险还是合规？",
         "具体工艺环节": "目前重点是电芯制造、部件装配，还是废旧电池回收？",
         "能耗现状": "如果方便，可以提供单位产品能耗，或近期能耗变化幅度。",
         "基线能耗": "如果方便，可以提供近期月度用电量或单位产品能耗。",
@@ -186,7 +192,7 @@ async def run_with_progress(query: str, top_k: int, profile: dict | None, use_ll
                             session_id: str, user_id: str) -> dict:
     """Interactive CLI wrapper with elapsed time and coarse ETA feedback."""
     started = time.monotonic()
-    task = asyncio.create_task(ManufacturingOrchestratorFacade(run).run(query, top_k=top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
+    task = asyncio.create_task(ScenarioOrchestratorFacade(run).run(query, top_k=top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
     estimates = {"simple": 20, "standard": 45, "complex": 90}
     stage = "正在识别意图和判断任务复杂度"
     shown = 0
@@ -230,8 +236,8 @@ def render_interactive_answer(result: dict) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run ProcessAgent manufacturing agents locally")
-    parser.add_argument("query", nargs="?", help="制造业问题；省略后进入交互式对话")
+    parser = argparse.ArgumentParser(description="Run ProcessAgent scenario agent locally")
+    parser.add_argument("query", nargs="?", help="企业场景问题；省略后进入交互式对话")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--profile", type=Path, help="企业上下文 JSON 文件")
     parser.add_argument("--output", type=Path, help="保存完整 JSON 结果")
@@ -245,8 +251,8 @@ def main() -> int:
     use_llm = args.llm or os.getenv("PROCESSAGENT_USE_LLM", "true").lower() in {"1", "true", "yes"}
     profile = json.loads(args.profile.read_text(encoding="utf-8")) if args.profile else None
     if not args.query:
-        print("ProcessAgent 制造业场景分析助手")
-        print("可帮助分析制造工艺、设备、能源、质量和企业运营问题，并结合知识库给出措施、风险和实施建议。")
+        print("ProcessAgent 企业场景分析助手")
+        print("可帮助分析制造、零售、运输、医药、能源、建筑、金融等场景，并结合知识库给出措施、风险和实施建议。")
         print("您可以直接描述一个生产或管理问题；输入 exit 或 quit 退出。")
         while True:
             try:
@@ -264,7 +270,7 @@ def main() -> int:
             # answer is responsible for deciding whether missing information
             # is worth mentioning and how to phrase it naturally.
         return 0
-    orchestrator = ManufacturingOrchestratorFacade(run)
+    orchestrator = ScenarioOrchestratorFacade(run)
     result = asyncio.run(orchestrator.run(args.query, top_k=args.top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
