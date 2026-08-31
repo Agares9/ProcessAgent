@@ -88,7 +88,11 @@ class DocumentParser:
     def _parse_docx(self, path: Path) -> ParsedDocument:
         import docx  # 延迟导入
 
-        doc = docx.Document(str(path))
+        try:
+            doc = docx.Document(str(path))
+        except KeyError as exc:
+            logger.warning("DOCX 关系缺失(%s)，回退直接读取 Word XML", exc)
+            return self._parse_docx_xml(path)
         blocks: list[Block] = []
         # 文档内段落遍历（含表格）
         from docx.document import Document as _Doc
@@ -106,6 +110,21 @@ class DocumentParser:
                 blocks.append(self._table_to_block(table))
         raw = "\n".join(b.text for b in blocks if b.text)
         return ParsedDocument(title=title, blocks=blocks, raw_text=raw, meta={"format": "docx"})
+
+    def _parse_docx_xml(self, path: Path) -> ParsedDocument:
+        """读取关系文件缺失但仍包含 word/document.xml 的 DOCX。"""
+        from xml.etree import ElementTree
+        from zipfile import ZipFile
+
+        with ZipFile(path) as archive:
+            root = ElementTree.fromstring(archive.read("word/document.xml"))
+        blocks = []
+        for paragraph in (node for node in root.iter() if node.tag.endswith("}p")):
+            text = "".join(node.text or "" for node in paragraph.iter() if node.tag.endswith("}t")).strip()
+            if text:
+                blocks.append(Block(type="heading" if HEADING_RE.match(text) else "paragraph", level=1 if HEADING_RE.match(text) else 0, text=text))
+        raw = "\n".join(block.text for block in blocks)
+        return ParsedDocument(title=path.stem, blocks=blocks, raw_text=raw, meta={"format": "docx_xml_fallback"})
 
     def _paragraph_to_block(self, para: Any) -> Block:
         text = para.text.strip()

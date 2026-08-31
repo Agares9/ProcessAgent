@@ -52,14 +52,6 @@ class ArtifactRequest(BaseModel):
     confidence: Optional[float] = None
 
 
-class DepartmentAnswerRequest(BaseModel):
-    query: str
-    dept_id: str
-    session_id: str = ""
-    user_id: str = "internal"  # 仅内部服务令牌可调用，不接受公网用户身份
-    memory_context: str = ""
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -81,29 +73,6 @@ async def retrieve(req: RetrieveRequest, request: Request):
             if doc:
                 c["doc_title"] = doc.get("title", "")
     return {"code": 0, "message": "ok", "data": chunks}
-
-
-@router.post("/dept/answer")
-async def department_answer(req: DepartmentAnswerRequest, request: Request):
-    container = request.app.state.container
-    configured = container.settings.dept_id
-    if not configured:
-        raise HTTPException(status_code=503, detail="当前实例不是部门 Agent")
-    if req.dept_id != configured:
-        raise HTTPException(status_code=403, detail="请求部门与 DEPT_ID 不一致")
-    metrics.DEPT_AGENT_INFLIGHT.labels(dept=configured).inc()
-    try:
-        result = await container.orchestrator.answer(
-            req.query, session_id=req.session_id, user_id=req.user_id, dept_ids=[configured],
-            external_memory_context=req.memory_context,
-        )
-        metrics.DEPT_AGENT_REQUEST.labels(dept=configured, status="success").inc()
-        return {"code": 0, "message": "ok", "data": result}
-    except Exception:
-        metrics.DEPT_AGENT_REQUEST.labels(dept=configured, status="error").inc()
-        raise
-    finally:
-        metrics.DEPT_AGENT_INFLIGHT.labels(dept=configured).dec()
 
 
 @router.get("/departments")

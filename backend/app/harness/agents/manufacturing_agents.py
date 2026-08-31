@@ -7,12 +7,14 @@ from typing import Any
 
 from app.harness.manufacturing_schemas import (
     AnalysisPlan,
+    AnalysisPlanDraft,
     AnalysisTask,
     EnterpriseContext,
     ManufacturingIntent,
     ScenarioIntent,
 )
 from app.llm.client import ChatMessage, LLMClient
+from app.llm.structured import StructuredLLM
 
 
 class ScenarioIntentAgent:
@@ -87,17 +89,22 @@ class ScenarioIntentAgent:
             raw={"source": "deterministic_fallback", "query": query, "context": context[:500]},
         )
 
-    async def infer_async(self, query: str, llm: LLMClient | None = None, context: str = "") -> ScenarioIntent:
-        if llm is None or not llm.api_key:
-            return self.infer(query, context)
-        prompt = ("你是通用企业场景意图识别助手，只输出JSON。字段：industry, domain, business_domain, scenario_type, response_mode(analysis|capability_info|boundary_redirect), intent_type, complexity(simple|standard|complex), objectives, industries, entities, metrics, "
+    async def infer_async(
+        self, query: str, structured_llm: StructuredLLM | None = None, context: str = ""
+    ) -> ScenarioIntent:
+        if structured_llm is None:
+            raise RuntimeError("ScenarioIntentAgent 必须使用 StructuredLLM")
+        prompt = ("你是通用企业场景意图识别助手，只输出一个 JSON 对象，不要 Markdown。字段：industry, domain, business_domain, scenario_type, response_mode(analysis|capability_info|boundary_redirect), intent_type, complexity(simple|standard|complex), objectives, industries, entities, metrics, "
                   "processes, materials, equipment, constraints, requested_outputs, missing_information, "
                   f"needs_clarification, confidence。complexity由你根据问题范围、目标数量、约束、预算和是否需要多步骤决策判断。\n用户问题：{query}\n上下文：{context[:2000]}")
-        try:
-            data = await llm.complete_json([ChatMessage.system("严谨、保守，不得虚构企业事实。"), ChatMessage.user(prompt)], temperature=0.0)
-            return ScenarioIntent.model_validate(data)
-        except Exception:
-            return self.infer(query, context)
+        result = await structured_llm.complete(
+            [ChatMessage.system("严谨、保守，不得虚构企业事实。严格遵守字段类型。"), ChatMessage.user(prompt)],
+            schema=ScenarioIntent,
+            agent_name="scenario_intent",
+            temperature=0.0,
+        )
+        result.raw = {"source": "structured_llm"}
+        return result
 
 
 class ManufacturingIntentAgent(ScenarioIntentAgent):
@@ -152,35 +159,45 @@ class LeadAgent:
         ]
         return AnalysisPlan(tasks=tasks, assumptions=context.assumptions, missing_information=context.missing_information)
 
-    async def plan_async(self, intent: ManufacturingIntent, context: EnterpriseContext, llm: LLMClient | None = None) -> AnalysisPlan:
-        if llm is None or not llm.api_key:
-            return self.plan(intent, context)
+    async def plan_async(
+        self, intent: ManufacturingIntent, context: EnterpriseContext,
+        structured_llm: StructuredLLM | None = None,
+    ) -> AnalysisPlan:
+        if structured_llm is None:
+            raise RuntimeError("LeadAgent 必须使用 StructuredLLM")
         prompt = ("你是通用企业场景 LeadAgent，只输出JSON对象{tasks:[...]}。每个任务字段：task_id,title,objective,role,"
-                  "priority,dependencies,allowed_skills,completion_criteria。只能使用检索和适用性Skills，"
+                  "priority,dependencies,allowed_skills,completion_criteria。allowed_skills 必须严格使用 JSON Schema 中的 Skill 枚举值，"
                   f"不得创建固定专业Agent。\n意图：{intent.model_dump_json()}\n上下文：{context.model_dump_json()}")
-        try:
-            data = await llm.complete_json([ChatMessage.system("只输出合法JSON。"), ChatMessage.user(prompt)], temperature=0.0)
-            tasks = data.get("tasks", []) if isinstance(data, dict) else []
-            plan = AnalysisPlan.model_validate({"tasks": tasks, "assumptions": context.assumptions, "missing_information": context.missing_information})
-            allowed = {"retrieve", "understand", "analyze", "compare", "calculate", "optimize", "check", "verify", "search_manufacturing_knowledge", "search_case_studies", "get_document_evidence", "check_applicability", "compare_technical_options", "extract_process_parameters", "calculate_project_financials", "calculate_energy_savings", "calculate_emission_reduction", "verify_citations", "check_constraint_compliance"}
-            for task in plan.tasks:
-                task.allowed_skills = [skill for skill in task.allowed_skills if skill in allowed]
-            return plan
-        except Exception:
-            return self.plan(intent, context)
+        draft = await structured_llm.complete(
+            [ChatMessage.system("只输出符合字段类型的合法 JSON。"), ChatMessage.user(prompt)],
+            schema=AnalysisPlanDraft,
+            agent_name="lead_plan",
+            temperature=0.0,
+        )
+        return AnalysisPlan(
+            tasks=draft.tasks,
+            assumptions=context.assumptions,
+            missing_information=context.missing_information,
+        )
 
 
 class VerifierAgent:
     """Deterministic evidence gate before synthesis."""
 
     def verify(self, results: list[Any]) -> dict[str, Any]:
-        issues: list[str] = []
+        execution_issues: list[str] = []
         citation_errors: list[str] = []
+        retrieval_states: list[str] = []
+        evidence_count = 0
         for result in results:
             seen_chunks: set[str] = set()
+            data = getattr(result, "data", {}) or {}
+            if data.get("retrieval_status"):
+                retrieval_states.append(str(data["retrieval_status"]))
             if getattr(result, "status", "") == "failed":
-                issues.append(f"task_failed:{getattr(result, 'task_id', '')}")
+                execution_issues.append(f"task_failed:{getattr(result, 'task_id', '')}")
             for artifact in getattr(result, "artifacts", []) or []:
+                evidence_count += 1
                 if isinstance(artifact, dict):
                     chunk_id = artifact.get("chunk_id", "")
                     source_id = artifact.get("source_id", "")
@@ -203,18 +220,77 @@ class VerifierAgent:
                     citation_errors.append(f"duplicate_evidence:{chunk_id}")
                 if chunk_id:
                     seen_chunks.add(chunk_id)
-        issues.extend(citation_errors)
-        passed = not issues
-        score = 1.0 if passed else max(0.0, 1.0 - min(len(issues) * 0.2, 1.0))
+        if "available" in retrieval_states or evidence_count:
+            retrieval_status = "available"
+        elif "error" in retrieval_states:
+            retrieval_status = "error"
+        elif "no_match" in retrieval_states:
+            retrieval_status = "no_match"
+        else:
+            retrieval_status = "not_requested"
+        citation_status = (
+            "invalid" if citation_errors else
+            "valid" if evidence_count else
+            "not_available" if retrieval_status == "error" else
+            "not_applicable"
+        )
+        passed = not citation_errors
+        score = 1.0 if passed else max(0.0, 1.0 - min(len(citation_errors) * 0.2, 1.0))
+        issues = execution_issues + citation_errors
         return {
             "passed": passed, "score": score, "issues": issues,
             "citation_errors": citation_errors,
-            "required_revisions": issues,
+            "citation_status": citation_status,
+            "retrieval_status": retrieval_status,
+            "evidence_count": evidence_count,
+            "execution_issues": execution_issues,
+            "required_revisions": citation_errors,
         }
 
 
 class OrchestratorAgent:
     """Unified deterministic orchestration facade and evidence-grounded answer layer."""
+
+    @staticmethod
+    def _valid_evidence(results: list[Any]) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for result in results:
+            for artifact in getattr(result, "artifacts", []) or []:
+                item = artifact.model_dump() if hasattr(artifact, "model_dump") else dict(artifact)
+                chunk_id = str(item.get("chunk_id") or "")
+                if not item.get("source_id") or not chunk_id or not str(item.get("excerpt") or "").strip():
+                    continue
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                evidence.append(item)
+        return evidence
+
+    @staticmethod
+    def _analysis_results(results: list[Any]) -> list[dict[str, Any]]:
+        output = []
+        for result in results:
+            item = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+            if item.get("status") != "completed" or item.get("task_id") in {"knowledge_search", "citation_check"}:
+                continue
+            data = dict(item.get("data") or {})
+            data.pop("execution", None)
+            output.append({
+                "task_id": item.get("task_id"),
+                "summary": item.get("summary", ""),
+                "data": data,
+                "assumptions": item.get("assumptions") or [],
+                "missing_information": item.get("missing_information") or [],
+            })
+        return output
+
+    @staticmethod
+    def _source_required(query: str) -> bool:
+        return any(term in query for term in (
+            "根据知识库", "依据知识库", "根据内部资料", "依据内部资料", "根据文献", "文献来源",
+            "提供来源", "给出来源", "引用来源", "引用标准", "根据标准", "依据标准",
+        ))
 
     def synthesize(self, query: str, results: list[Any], verification: dict[str, Any]) -> dict[str, Any]:
         findings = []
@@ -225,7 +301,7 @@ class OrchestratorAgent:
                 findings.append({"finding": artifact.get("claim", "")[:300], "evidence": artifact.get("excerpt", "")[:1200], "source_id": artifact.get("source_id", ""), "chunk_id": artifact.get("chunk_id", ""), "page": artifact.get("page_start")})
                 citations.append(artifact)
         return {
-            "executive_summary": "未通过证据校验，暂不输出确定性结论。" if not verification.get("passed") else "已基于检索到的相关资料形成初步分析，具体措施仍需结合现场数据验证。",
+            "executive_summary": "已根据问题信息形成初步分析和可执行建议。",
             "problem_definition": query,
             "findings": findings,
             "recommended_actions": ["先确认工艺、设备和能耗基线，再按证据适用条件筛选改造措施。"],
@@ -237,21 +313,32 @@ class OrchestratorAgent:
         }
 
     async def synthesize_async(self, query: str, results: list[Any], verification: dict[str, Any], llm: LLMClient | None = None) -> dict[str, Any]:
-        if llm is None or not llm.api_key or not verification.get("passed"):
+        if llm is None or not llm.api_key:
             return self.synthesize(query, results, verification)
-        evidence = [r.model_dump() if hasattr(r, "model_dump") else r for r in results]
-        prompt = ("你是通用企业场景证据增强回答Agent。请直接用自然、清晰的中文回答用户，不要输出JSON，不要套用固定报告模板。"
-                  "请根据问题复杂度自适应决定回答长度，简单问题简洁回答，复杂问题再展开方案。"
-                  f"assumptions, citations。根据问题复杂度和用户需求自适应决定回答长度和章节：简单定义问题简洁回答，标准问题给出分点分析，复杂决策问题才给出完整方案。不要为了填模板虚构章节或内容；空数组必须保持为空。每条事实发现说明证据、适用条件或限制；不得把外部案例效果写成企业实际结果，引用必须包含source_id、chunk_id和页码。\n问题：{query}\n"
-                  f"验证：{json.dumps(verification, ensure_ascii=False)}\n原始证据和任务结果：{json.dumps(evidence, ensure_ascii=False)[:18000]}\n"
-                  "由你负责理解问题、取舍内容和组织自然流畅的回答，不要机械复述文档或填充固定模板。"
-                  "不要单独输出固定标题‘如需进一步细化：’；如果确实有助于下一轮对话，可以自然地说明需要补充的信息。"
-                  "本地文档只作为事实证据和边界：案例数字必须标明为案例，不能直接当作当前企业结果；证据与问题不相关时不要使用。"
-                  "重要结论尽量标注来源编号或文档信息；没有证据支持的内容明确说明不确定性。")
+        evidence = self._valid_evidence(results)
+        answer_context = {
+            "query": query,
+            "analysis_results": self._analysis_results(results),
+            "evidence": evidence,
+            "evidence_status": "available" if evidence else "none",
+            "source_required": self._source_required(query),
+        }
+        prompt = (
+            "你是通用企业场景分析助手。请优先直接解决用户的问题，用自然、清晰的中文回答，不要输出JSON，"
+            "不要机械填充固定报告模板。知识库资料只是可选参考，不是回答前提。\n"
+            "规则：\n"
+            "1. evidence 中有相关资料时，可以结合资料分析；使用其中事实、数字或案例时必须标注来源。\n"
+            "2. evidence 为空时，直接基于你的专业知识正常回答，不要把缺少资料描述为系统失败或不完整回答。\n"
+            "3. 除非 source_required=true，否则不要提及知识库、检索状态、证据检索失败或等待知识库恢复。\n"
+            "4. source_required=true 且 evidence 为空时，应明确无法满足可核验来源要求，但仍可把一般专业分析单独说明。\n"
+            "5. 不得虚构企业现场数据；缺少现场数据时，可以给出常见原因、分析方法、实施建议和需要补充的数据。\n"
+            "6. 外部案例数字不能直接当作当前企业结果；无关证据不要使用。\n"
+            f"回答上下文：{json.dumps(answer_context, ensure_ascii=False)[:18000]}"
+        )
         try:
             content = await llm.complete([ChatMessage.system("你是流畅、严谨的企业场景回答助手。只输出最终回答，不输出JSON和推理过程。"), ChatMessage.user(prompt)], temperature=0.3)
             if not content.strip():
                 return self.synthesize(query, results, verification)
-            return {"executive_summary": content, "problem_definition": query, "findings": [], "recommended_actions": [], "implementation_roadmap": [], "risks_and_constraints": [], "missing_data": [], "assumptions": [], "citations": []}
+            return {"executive_summary": content, "problem_definition": query, "findings": [], "recommended_actions": [], "implementation_roadmap": [], "risks_and_constraints": [], "missing_data": [], "assumptions": [], "citations": evidence}
         except Exception:
-            return self.synthesize(query, results, verification)
+            raise

@@ -48,6 +48,7 @@ ProcessAgent/
 conda activate medix-swarm
 cd D:\workfile\ProcessAgent
 python -m pip install -r requirements.txt
+# 在 .env 中配置可用的 DEEPSEEK_API_KEY、模型和 Embedding
 cd backend
 python -m scripts.run_manufacturing_agents
 ```
@@ -140,7 +141,7 @@ ProcessAgent 默认采用本地数据存储和本地向量索引：
 - 原始知识文档保留在本机，不自动上传到第三方知识库。
 - SQLite、Chroma 和会话记忆默认保存在项目的 `local-data/` 目录。
 - 用户事实、企业上下文、检索证据和计算结果按不同来源记录。
-- 未配置外部 LLM 时，可以使用确定性回退逻辑运行基础流程。
+- DeepSeek LLM、语义 Embedding 和本地知识库都是强制运行依赖；任一启动检查失败时服务不会进入就绪状态。
 - 配置外部模型时，仅发送当前任务所需的问题、必要上下文和检索证据。
 
 生产部署仍应根据企业安全要求补充磁盘加密、访问控制、日志脱敏、备份恢复、网络出口控制和多租户数据隔离。

@@ -6,9 +6,10 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from app.config import Settings
 from app.harness.agents.manufacturing_agents import (
     EnterpriseContextAgent,
     OrchestratorAgent,
@@ -18,18 +19,9 @@ from app.harness.agents.manufacturing_agents import (
 )
 from app.harness.manufacturing_skills import ManufacturingSkillAccess
 from app.harness.task_executor import ManufacturingTaskExecutor, build_default_task_registry
-from app.llm.embeddings import EmbeddingClient
-from app.llm.deepseek import DeepSeekClient
 from app.config import get_settings
-from app.retrieval.vector_store import ChromaVectorStore
-from app.storage.store import SQLiteStore
-from app.storage.redis_store import MemorySessionStore
-from app.memory.working import WorkingMemory
-from app.memory.episodic import EpisodicMemory
-from app.memory.user_semantic import UserSemanticMemory
-from app.memory.organization import OrganizationMemory
-from app.memory.learning import LearningMemory
-from app.memory.context_builder import MemoryContextBuilder
+from app.deps import build_container
+from app.main import validate_knowledge_runtime, validate_llm_runtime
 from app.harness.manufacturing_schemas import AnalysisPlan, AnalysisTask
 from app.harness.skill_matcher import ScenarioSkillMatcher
 from app.harness.orchestrator import ScenarioOrchestratorFacade
@@ -37,6 +29,11 @@ from app.harness.orchestrator import ScenarioOrchestratorFacade
 
 def route_scope(query: str) -> str:
     """Deterministic safety gate before manufacturing retrieval."""
+    capability_terms = ("你能做什么", "你可以做什么", "可以做什么", "能做什么", "你的功能", "如何使用", "帮助")
+    if any(term in query for term in capability_terms):
+        return "capability"
+    if query.strip().lower() in {"你好", "您好", "嗨", "hello", "hi", "在吗"}:
+        return "general_chat"
     manufacturing_terms = ("制造", "工厂", "车间", "产线", "设备", "工艺", "注塑", "机加工", "焊接", "装配", "化工", "能耗", "节能", "碳排", "质量", "良率", "生产")
     out_of_scope_terms = ("天气", "股票", "旅游", "写诗", "歌词", "做饭", "足球")
     if any(term in query for term in out_of_scope_terms) and not any(term in query for term in manufacturing_terms):
@@ -55,8 +52,45 @@ def merge_intent_entities(intent, previous_entities: dict) -> None:
         intent.intent_type = previous_entities["intent_type"]
 
 
-async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: bool = False,
-              session_id: str = "cli-session", user_id: str = "cli-user") -> dict:
+async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: bool = True,
+              session_id: str = "cli-session", user_id: str = "cli-user", runtime: Any = None) -> dict:
+    """Run one scenario using the already initialized application runtime.
+
+    Web always passes its shared container. The fallback exists for direct CLI
+    and test callers, but still uses the same Settings/container assembly path.
+    """
+    runtime = runtime or build_container(get_settings())
+    if not use_llm:
+        raise RuntimeError("ProcessAgent 必须启用 LLM 才能运行")
+    if not runtime.settings.deepseek_api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，ProcessAgent 无法启动问答")
+
+    store = runtime.store
+
+    async def finish(result: dict) -> dict:
+        solution = result.get("solution") or {}
+        answer = result.get("answer") or solution.get("executive_summary", "")
+        citations = result.get("citations") or solution.get("citations", [])
+        retrieval_status = (result.get("verification") or {}).get("retrieval_status", "not_requested")
+        trace_id = "trace_" + uuid.uuid4().hex
+        await store.insert_trace({
+            "_id": trace_id,
+            "trace_id": trace_id,
+            "session_id": session_id,
+            "user_id": user_id,
+            "query": query,
+            "answer": answer,
+            "citations": citations,
+            "retrieval_status": retrieval_status,
+            "status": "completed",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        result["trace_id"] = trace_id
+        result["answer"] = answer
+        result["citations"] = citations
+        result["retrieval_status"] = retrieval_status
+        return result
+
     scope = route_scope(query)
     if scope in {"out_of_scope", "general_chat", "capability"}:
         capability_answer = (
@@ -65,51 +99,32 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
             "比较候选方案，计算成本、收益、能源和风险指标，并给出实施建议和所需补充数据。"
             "你可以直接描述一个业务问题，我会先基于已有资料回答，信息不足时再追问必要条件。"
         )
-        return {
+        return await finish({
             "query": query,
             "route": {"scope": scope, "response_mode": "capability_info" if scope == "capability" else "boundary_redirect", "reason": "未进入企业场景知识库"},
             "answer": capability_answer if scope == "capability" else ("你好，我可以协助分析企业经营、生产、供应链、风险和合规问题。请告诉我需要解决的具体场景。" if scope == "general_chat" else "这个问题不属于当前企业场景范围。你可以描述制造、零售、运输、医药、能源、建筑或金融相关问题。"),
-        }
-    settings = Settings(
-        storage_mode="sqlite", sqlite_path="../local-data/processagent.db",
-        vector_backend="chroma", chroma_path="../local-data/chroma",
-        embedding_provider="local", embedding_model="BAAI/bge-small-zh-v1.5",
-        embedding_dim=512, reranker_enabled=False,
-    )
-    store = SQLiteStore(settings.sqlite_path)
-    vectors = ChromaVectorStore(path=settings.chroma_path)
-    embeddings = EmbeddingClient(settings, relay=None)
+        })
+    vectors = runtime.vector_store
+    embeddings = runtime.embeddings
     skills = ManufacturingSkillAccess(store, vectors, embeddings)
 
-    # CLI uses an in-process session store; production can replace it with Redis.
-    session_store = MemorySessionStore()
-    working = WorkingMemory(session_store, ttl=1800, max_history=10)
-    episodic = EpisodicMemory(store, event_days=90, summary_days=180)
-    memory_builder = MemoryContextBuilder(
-        store, working, episodic, UserSemanticMemory(store),
-        OrganizationMemory(store), LearningMemory(store),
-        max_chars=6000, user_limit=8, org_limit=8, recent_limit=10,
-    )
+    working = runtime.working_memory
+    episodic = runtime.episodic_memory
+    memory_builder = runtime.memory_context_builder
     await working.append_message(session_id, "user", query)
     await episodic.append_event(session_id, user_id, "user_message", query)
     memory_context = await memory_builder.build(session_id, user_id, query, include_organization=False)
     memory_prompt = memory_context.prompt_text()
     intent_memory_prompt = memory_context.intent_prompt_text()
 
-    llm = DeepSeekClient(get_settings()) if use_llm else None
+    llm = runtime.llm
     intent_agent = ManufacturingIntentAgent()
-    intent = await intent_agent.infer_async(query, llm=llm, context=intent_memory_prompt)
-    # A classifier must not let a stale capability response override a clearly
-    # manufacturing-shaped current turn. Compare with the deterministic parser
-    # as a generic consistency check, without maintaining domain keyword lists.
-    if llm is not None and intent.domain != "manufacturing":
-        baseline = intent_agent.infer(query, context=intent_memory_prompt)
-        has_current_facts = bool(baseline.industries or baseline.processes or baseline.equipment or baseline.objectives)
-        if baseline.domain == "manufacturing" and has_current_facts:
-            intent = baseline
+    intent = await intent_agent.infer_async(
+        query, structured_llm=runtime.structured_llm, context=intent_memory_prompt
+    )
     if intent.domain in {"capability", "general_chat", "out_of_scope"}:
         answer = ("我可以帮助分析制造、零售、运输、医药、能源、建筑、金融等企业场景，并结合知识库给出措施、风险和实施建议。您可以直接描述一个业务问题。" if intent.domain == "capability" else "你好，我可以协助分析企业经营、生产、供应链、风险和合规问题。" if intent.domain == "general_chat" else "这个问题不属于当前企业场景范围。你可以描述制造、零售、运输、医药、能源、建筑或金融相关问题。")
-        return {"query": query, "route": {"scope": intent.domain, "response_mode": intent.response_mode}, "intent": intent.model_dump(), "answer": answer}
+        return await finish({"query": query, "route": {"scope": intent.domain, "response_mode": intent.response_mode}, "intent": intent.model_dump(), "answer": answer})
     # Merge facts already confirmed in prior turns without requiring a separate profile.
     previous_entities = memory_context.session.get("entities") or {}
     merge_intent_entities(intent, previous_entities)
@@ -127,7 +142,7 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
             completion_criteria=["返回相关证据"],
         )], assumptions=context.assumptions, missing_information=context.missing_information)
     else:
-        plan = await LeadAgent().plan_async(intent, context, llm=llm)
+        plan = await LeadAgent().plan_async(intent, context, structured_llm=runtime.structured_llm)
     matched_skills = ScenarioSkillMatcher().match(query, intent)
     existing = {skill for task in plan.tasks for skill in task.allowed_skills}
     task_specs = {
@@ -179,20 +194,21 @@ async def run(query: str, top_k: int = 5, profile: dict | None = None, use_llm: 
         "基线能耗": "如果方便，可以提供近期月度用电量或单位产品能耗。",
         "产量和运行周期": "如果方便，可以提供月产量和设备年运行小时。",
     }
-    return {
+    return await finish({
         "query": query, "route": {"scope": scope, "complexity": complexity, "response_mode": response_mode}, "intent": intent.model_dump(), "context": context.model_dump(),
         "matched_skills": matched_skills,
         "plan": plan.model_dump(), "results": [item.model_dump() for item in results],
         "verification": verification, "solution": solution,
         "follow_up_questions": [followup_map.get(item, f"如果方便，可以说明{item}。") for item in missing[:3]],
-    }
+    })
 
 
 async def run_with_progress(query: str, top_k: int, profile: dict | None, use_llm: bool,
-                            session_id: str, user_id: str) -> dict:
+                            session_id: str, user_id: str, runtime: Any) -> dict:
     """Interactive CLI wrapper with elapsed time and coarse ETA feedback."""
     started = time.monotonic()
-    task = asyncio.create_task(ScenarioOrchestratorFacade(run).run(query, top_k=top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
+    pipeline = lambda *args: run(*args, runtime=runtime)
+    task = asyncio.create_task(ScenarioOrchestratorFacade(pipeline).run(query, top_k=top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
     estimates = {"simple": 20, "standard": 45, "complex": 90}
     stage = "正在识别意图和判断任务复杂度"
     shown = 0
@@ -241,14 +257,16 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--profile", type=Path, help="企业上下文 JSON 文件")
     parser.add_argument("--output", type=Path, help="保存完整 JSON 结果")
-    parser.add_argument("--llm", action="store_true", help="使用配置的 DeepSeek 进行结构化推理")
     parser.add_argument("--session-id", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--user-id", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
     import os
     session_id = args.session_id or os.getenv("PROCESSAGENT_SESSION_ID") or f"cli-{uuid.uuid4().hex[:10]}"
     user_id = args.user_id or os.getenv("PROCESSAGENT_USER_ID", "cli-user")
-    use_llm = args.llm or os.getenv("PROCESSAGENT_USE_LLM", "true").lower() in {"1", "true", "yes"}
+    use_llm = True
+    runtime = build_container(get_settings())
+    asyncio.run(validate_llm_runtime(runtime))
+    asyncio.run(validate_knowledge_runtime(runtime))
     profile = json.loads(args.profile.read_text(encoding="utf-8")) if args.profile else None
     if not args.query:
         print("ProcessAgent 企业场景分析助手")
@@ -264,13 +282,13 @@ def main() -> int:
                 continue
             if query.lower() in {"exit", "quit", "退出"}:
                 break
-            result = asyncio.run(run_with_progress(query, args.top_k, profile, use_llm, session_id, user_id))
+            result = asyncio.run(run_with_progress(query, args.top_k, profile, use_llm, session_id, user_id, runtime))
             print(f"\n🤖 助手>\n{render_interactive_answer(result)}")
             # Do not append a fixed follow-up section here. The orchestrator
             # answer is responsible for deciding whether missing information
             # is worth mentioning and how to phrase it naturally.
         return 0
-    orchestrator = ScenarioOrchestratorFacade(run)
+    orchestrator = ScenarioOrchestratorFacade(lambda *call_args: run(*call_args, runtime=runtime))
     result = asyncio.run(orchestrator.run(args.query, top_k=args.top_k, profile=profile, use_llm=use_llm, session_id=session_id, user_id=user_id))
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

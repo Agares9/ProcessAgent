@@ -83,7 +83,15 @@ class ManufacturingTaskExecutor:
                 last_error = str(exc)
             if attempt < self.max_retries:
                 await asyncio.sleep(0.05 * (attempt + 1))
-        return TaskResult(task_id=task.task_id, status="failed", error=last_error, data={"execution": {"attempt": self.max_retries + 1, "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000, 2)}})
+        data = {
+            "execution": {
+                "attempt": self.max_retries + 1,
+                "duration_ms": round((asyncio.get_running_loop().time() - started) * 1000, 2),
+            }
+        }
+        if task.task_id == "knowledge_search":
+            data["retrieval_status"] = "error"
+        return TaskResult(task_id=task.task_id, status="failed", error=last_error, data=data)
 
 
 def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
@@ -98,8 +106,16 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
             chunk_id=hit.get("chunk_id", ""), page_start=hit.get("page_start"), page_end=hit.get("page_end"),
             excerpt=hit.get("excerpt", ""), visibility=hit.get("visibility", "enterprise_private"),
         ) for hit in hits]
-        return TaskResult(task_id=task.task_id, status="completed" if hits else "failed",
-                          summary=f"检索到 {len(hits)} 条知识证据", artifacts=artifacts)
+        return TaskResult(
+            task_id=task.task_id,
+            status="completed",
+            summary=f"检索到 {len(hits)} 条知识证据",
+            artifacts=artifacts,
+            data={
+                "retrieval_status": "available" if hits else "no_match",
+                "hit_count": len(hits),
+            },
+        )
 
     async def applicability_check(task: AnalysisTask, context: dict[str, Any]) -> TaskResult:
         dependency = context.get("dependencies", {}).get("knowledge_search", {})
@@ -149,6 +165,9 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
             for key, value in (scenario_context.get("metrics") or {}).items():
                 kwargs.setdefault(key, value)
             kwargs.setdefault("entities", scenario_context.get("entities", []))
+        if requested_skill == "retrieve" or skill in {"search_manufacturing_knowledge", "search_knowledge", "search_case_studies"}:
+            kwargs.setdefault("query", context.get("query", task.objective))
+            kwargs.setdefault("top_k", context.get("top_k", 5))
         if skill == "extract_process_parameters":
             kwargs.setdefault("text", context.get("query", ""))
         elif skill == "check_applicability":
@@ -199,6 +218,21 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
                 value = await skill_gateway.execute(requested_skill, **core_kwargs)
             else:
                 value = await skill_gateway.execute(skill, **kwargs)
+            if requested_skill == "retrieve" or skill in {"search_manufacturing_knowledge", "search_knowledge", "search_case_studies"}:
+                from app.harness.manufacturing_schemas import EvidenceArtifact
+
+                hits = value if isinstance(value, list) else []
+                artifacts = [EvidenceArtifact(
+                    claim=hit.get("excerpt", "")[:200], value=hit.get("score"),
+                    source_id=hit.get("doc_id", ""), chunk_id=hit.get("chunk_id", ""),
+                    page_start=hit.get("page_start"), page_end=hit.get("page_end"),
+                    excerpt=hit.get("excerpt", ""), visibility=hit.get("visibility", "enterprise_private"),
+                ) for hit in hits]
+                return TaskResult(
+                    task_id=task.task_id, status="completed",
+                    summary=f"检索到 {len(hits)} 条知识证据", artifacts=artifacts,
+                    data={"retrieval_status": "available" if hits else "no_match", "hit_count": len(hits)},
+                )
             data = value if isinstance(value, dict) else {"value": value}
             prior_sources = []
             for dependency in (context.get("dependencies") or {}).values():
@@ -213,7 +247,10 @@ def build_default_task_registry(skill_gateway: Any) -> TaskRegistry:
                 sources=[str(x) for x in data.get("source_ids", [])] if isinstance(data, dict) else [],
             )
         except Exception as exc:  # noqa: BLE001
-            return TaskResult(task_id=task.task_id, status="failed", error=str(exc))
+            data = {}
+            if requested_skill == "retrieve" or skill in {"search_manufacturing_knowledge", "search_knowledge", "search_case_studies"}:
+                data["retrieval_status"] = "error"
+            return TaskResult(task_id=task.task_id, status="failed", error=str(exc), data=data)
 
     registry.register("knowledge_search", knowledge_search)
     registry.register("applicability_check", applicability_check)

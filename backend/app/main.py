@@ -1,6 +1,7 @@
 """文枢后端入口（FastAPI）。"""
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import generate_latest
 from starlette.responses import Response
 
-from app.api.router import api_router, root_router
+from app.api.router import root_router
 from app.config import get_settings
 from app.deps import build_container
 from app.utils.logging import get_logger, setup_logging
@@ -17,12 +18,67 @@ from app.loop.default_skills import seed_default_skills
 logger = get_logger(__name__)
 
 
+def _is_placeholder_key(value: str) -> bool:
+    value = value.strip().lower()
+    return not value or value in {"changeme", "change-me"} or (value.startswith("sk-") and set(value[3:]) <= {"x"})
+
+
+async def validate_llm_runtime(container) -> None:
+    """Fail startup unless the configured LLM can answer a minimal request."""
+    settings = container.settings
+    if _is_placeholder_key(settings.deepseek_api_key):
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置或仍为样例值")
+    if not settings.deepseek_base_url.strip() or not settings.deepseek_model.strip():
+        raise RuntimeError("DeepSeek base URL 或模型名称未配置")
+    try:
+        reply = await asyncio.wait_for(
+            container.llm.complete(
+                [{"role": "user", "content": "只回复 OK"}], temperature=0, max_tokens=4
+            ),
+            timeout=settings.startup_llm_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(f"LLM 启动检查超时（{settings.startup_llm_timeout:g}s）") from exc
+    if not reply.strip():
+        raise RuntimeError("LLM 启动检查返回空响应")
+
+
+async def validate_knowledge_runtime(container) -> dict[str, int]:
+    """Verify embedding, knowledge documents and vector index are usable."""
+    provider = str(getattr(container.settings, "embedding_provider", "")).lower()
+    if provider == "hash":
+        raise RuntimeError("生产运行不能使用 hash Embedding")
+    if provider == "relay" and not getattr(container.settings, "relay_api_key", ""):
+        raise RuntimeError("Embedding provider=relay 但 RELAY_API_KEY 未配置")
+    vector = await container.embeddings.embed_query("ProcessAgent 启动检查")
+    if not vector:
+        raise RuntimeError("Embedding 启动检查返回空向量")
+    chunks = await container.store.list_active_chunks()
+    vector_count = await container.vector_store.count()
+    if container.settings.require_knowledge_base and not chunks:
+        raise RuntimeError("知识库为空：未找到 active chunks")
+    if chunks and vector_count < len(chunks):
+        raise RuntimeError(f"向量索引不完整：vectors={vector_count}, active_chunks={len(chunks)}")
+    if vector_count:
+        try:
+            await container.vector_store.search(vector, top_k=1)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"Embedding 与向量索引不兼容: {exc}") from exc
+    return {"active_chunks": len(chunks), "vectors": vector_count, "embedding_dim": len(vector)}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
     container = build_container(settings)
     app.state.container = container
+    app.state.readiness = {"status": "starting", "components": {}}
+
+    logger.info(
+        "运行路径: sqlite=%s, chroma=%s, uploads=%s",
+        settings.sqlite_path, settings.chroma_path, settings.upload_storage_dir,
+    )
 
     # 连接外部依赖（memory 模式跳过）
     if container.mongo is not None:
@@ -35,6 +91,14 @@ async def lifespan(app: FastAPI):
             await container.session_store.connect()
         except Exception as exc:  # noqa: BLE001
             logger.warning("Redis 连接失败(%s)，会话回退内存", exc)
+
+    try:
+        await validate_llm_runtime(container)
+        app.state.readiness["components"]["llm"] = "ready"
+    except Exception as exc:
+        app.state.readiness = {"status": "not_ready", "components": {"llm": "failed"}, "error": str(exc)}
+        logger.error("LLM 启动检查失败: %s", exc)
+        raise
 
     # 种子默认 Rules / Hooks
     await container.rule_engine.seed_defaults()
@@ -77,6 +141,21 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         logger.warning("重建检索索引失败(%s)，检索可能不完整", exc)
 
+    try:
+        knowledge = await validate_knowledge_runtime(container)
+        app.state.readiness["components"].update({
+            "embedding": "ready", "storage": "ready", "vector_store": "ready", "knowledge_base": "ready"
+        })
+        app.state.readiness["details"] = knowledge
+    except Exception as exc:
+        app.state.readiness = {
+            "status": "not_ready", "components": {**app.state.readiness.get("components", {}), "knowledge_base": "failed"},
+            "error": str(exc),
+        }
+        logger.error("知识运行时启动检查失败: %s", exc)
+        raise
+
+    app.state.readiness["status"] = "ready"
     logger.info("%s 启动完成 (storage=%s)", settings.app_name, settings.storage_mode)
     yield
 
@@ -127,7 +206,6 @@ app.add_middleware(
 )
 
 app.include_router(root_router)
-app.include_router(api_router)
 
 
 @app.get("/metrics")

@@ -15,6 +15,18 @@ SKILL_TRIGGER = Counter("processagent_skill_trigger_total", "Skill 触发次数"
 DEPT_AGENT_REQUEST = Counter("processagent_dept_agent_requests_total", "部门 Agent 请求数", ["dept", "status"])
 DEPT_AGENT_INFLIGHT = Gauge("processagent_dept_agent_inflight", "部门 Agent 当前在途请求数", ["dept"])
 PI_AGENT_EXECUTION = Counter("processagent_pi_agent_execution_total", "pi Agent 执行次数", ["agent", "status"])
+STRUCTURED_LLM_REQUEST = Counter(
+    "processagent_structured_llm_requests_total", "结构化 LLM 请求次数", ["agent", "format", "outcome"]
+)
+STRUCTURED_LLM_REPAIR = Counter(
+    "processagent_structured_llm_repairs_total", "结构化 LLM 修复次数", ["agent", "outcome"]
+)
+STRUCTURED_LLM_LATENCY = Histogram(
+    "processagent_structured_llm_duration_seconds", "结构化 LLM 端到端时延", ["agent"]
+)
+STRUCTURED_LLM_VALIDATION_ERROR = Counter(
+    "processagent_structured_llm_validation_errors_total", "结构化输出字段校验错误", ["agent", "field"]
+)
 
 
 def record_retrieval_hit(dept: str, hit: bool) -> None:

@@ -1,10 +1,10 @@
 # 接入层（L1）
 
-REST API 与健康探针，统一前缀 `/api/v1`，返回结构 `{code, message, data}`。
+当前业务 API 由 `web_app.py` 提供；FastAPI 仅保留健康探针和运行时生命周期，不再提供旧 `/api/v1` 对话接口。
 
 ## 文件
 
-- `router.py` —— 路由汇总（`/api/v1` 前缀）
+- `router.py` —— 健康探针路由
 - `schemas.py` —— 请求/响应 Pydantic 模型
 - `deps.py` —— 鉴权依赖（`get_optional_user` / `require_user` / `require_admin`）
 - `routes/auth.py` —— 登录 / 当前用户 / 用户列表

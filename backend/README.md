@@ -39,4 +39,4 @@ cd D:\workfile\ProcessAgent
 python -m pytest backend/tests/test_scenario_routing.py backend/tests/test_task_executor.py -q
 ```
 
-默认使用本地 SQLite、Chroma 和 Embedding 配置。当前后端是可运行的通用编排基础版本，领域业务规则和跨行业评测仍在持续完善。
+默认使用本地 SQLite、Chroma 和语义 Embedding 配置。DeepSeek LLM、Embedding 和知识库均通过启动检查后服务才会进入 ready 状态；当前后端是可运行的通用编排基础版本，领域业务规则和跨行业评测仍在持续完善。

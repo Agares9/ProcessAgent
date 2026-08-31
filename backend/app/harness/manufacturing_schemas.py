@@ -45,6 +45,25 @@ class ScenarioIntent(BaseModel):
                 for item in value.get(key, []) or []:
                     entities.append({"type": key[:-1], "name": item})
             value["entities"] = entities
+        elif isinstance(value.get("entities"), dict):
+            # LLMs may return a compact object (e.g. {"store_count": 30})
+            # although the public contract uses a list of entity records.
+            value["entities"] = [
+                {"type": str(key), "value": item} for key, item in value["entities"].items()
+            ]
+        elif isinstance(value.get("entities"), list):
+            value["entities"] = [
+                item if isinstance(item, dict) else {"type": "entity", "name": str(item)}
+                for item in value["entities"]
+            ]
+        if isinstance(value.get("metrics"), list):
+            metrics: dict[str, Any] = {}
+            for index, item in enumerate(value["metrics"]):
+                if isinstance(item, dict) and item.get("name"):
+                    metrics[str(item["name"])] = item.get("value")
+                else:
+                    metrics[f"metric_{index + 1}"] = item
+            value["metrics"] = metrics
         return value
 
 
@@ -107,6 +126,18 @@ class AnalysisTask(BaseModel):
     timeout_seconds: int = Field(default=60, ge=1, le=900)
     completion_criteria: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_llm_lists(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        value = dict(data)
+        for field in ("dependencies", "required_capabilities", "allowed_skills", "completion_criteria"):
+            item = value.get(field)
+            if isinstance(item, str):
+                value[field] = [item]
+        return value
+
 
 class AnalysisPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -114,6 +145,26 @@ class AnalysisPlan(BaseModel):
     tasks: list[AnalysisTask] = Field(default_factory=list)
     assumptions: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
+
+
+AllowedAnalysisSkill = Literal[
+    "retrieve", "understand", "analyze", "compare", "calculate", "optimize", "check", "verify",
+    "search_manufacturing_knowledge", "search_case_studies", "get_document_evidence",
+    "check_applicability", "compare_technical_options", "extract_process_parameters",
+    "calculate_project_financials", "calculate_energy_savings", "calculate_emission_reduction",
+    "verify_citations", "check_constraint_compliance",
+]
+
+
+class AnalysisTaskDraft(AnalysisTask):
+    allowed_skills: list[AllowedAnalysisSkill] = Field(min_length=1)
+
+
+class AnalysisPlanDraft(BaseModel):
+    """Only the task list is model-generated; trusted context is injected by code."""
+
+    model_config = ConfigDict(extra="forbid")
+    tasks: list[AnalysisTaskDraft] = Field(min_length=1)
 
 
 class EvidenceArtifact(BaseModel):

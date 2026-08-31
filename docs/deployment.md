@@ -5,7 +5,19 @@
 ```bash
 cd program
 cp .env.example .env     # 填写密钥
-docker compose up --build
+docker compose build
+
+# 项目 ./cache 已包含本地模型，默认严格离线加载
+docker compose up -d
+```
+
+`cache/` 通过 volume 挂载到容器 `/app/cache`，Hugging Face 从
+`/app/cache/huggingface` 读取 `BAAI/bge-small-zh-v1.5`。容器重建不会下载模型；
+部署服务器时必须一并复制完整的 `cache/` 目录。需要更新模型时，临时执行：
+
+```bash
+docker compose run --rm -e EMBEDDING_LOCAL_ONLY=false processagent \
+  python -m scripts.init_local_models
 ```
 
 ## 2. 生产部署（K8s）

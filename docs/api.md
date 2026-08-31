@@ -44,7 +44,7 @@
 ### 健康检查
 
 - `GET /healthz` —— 存活探针（K8s liveness）
-- `GET /readyz` —— 就绪探针（检查 MongoDB/Redis 连接，K8s readiness）
+- `GET /readyz` —— 就绪探针（检查 LLM、Embedding、主存储、向量索引和知识库，失败返回 503）
 
 ### 对话
 

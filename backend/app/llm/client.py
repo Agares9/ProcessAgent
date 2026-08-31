@@ -18,6 +18,19 @@ logger = get_logger(__name__)
 class LLMError(Exception):
     """LLM 调用异常。"""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str = "unknown",
+        status_code: int | None = None,
+        response_body: str = "",
+    ) -> None:
+        self.error_kind = error_kind
+        self.status_code = status_code
+        self.response_body = response_body
+        super().__init__(message)
+
 
 class ChatMessage(dict):
     """便捷构造消息字典。"""
@@ -73,7 +86,7 @@ class LLMClient(ABC):
     ) -> str:
         """非流式补全，返回文本。"""
         if not self.api_key:
-            raise LLMError("未配置 API Key，无法调用 LLM")
+            raise LLMError("未配置 API Key，无法调用 LLM", error_kind="auth")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -92,14 +105,19 @@ class LLMClient(ABC):
         except httpx.HTTPStatusError as exc:
             body = exc.response.text[:500]
             logger.error("LLM HTTP %s: %s", exc.response.status_code, body)
-            raise LLMError(f"LLM 请求失败 {exc.response.status_code}: {body}") from exc
+            raise LLMError(
+                f"LLM 请求失败 {exc.response.status_code}: {body}",
+                error_kind="http",
+                status_code=exc.response.status_code,
+                response_body=body,
+            ) from exc
         except httpx.HTTPError as exc:
-            raise LLMError(f"LLM 网络错误: {exc}") from exc
+            raise LLMError(f"LLM 网络错误: {exc}", error_kind="network") from exc
 
         try:
             return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError(f"LLM 响应格式异常: {data}") from exc
+            raise LLMError(f"LLM 响应格式异常: {data}", error_kind="response") from exc
 
     async def complete_json(
         self,
@@ -107,9 +125,15 @@ class LLMClient(ABC):
         *,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> Any:
         """请求 JSON 输出并解析（兼容不支持 response_format 的服务）。"""
-        text = await self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        text = await self.complete(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
         return self._extract_json(text)
 
     async def stream(self, messages: list[dict[str, str]], **kwargs: Any) -> AsyncIterator[str]:

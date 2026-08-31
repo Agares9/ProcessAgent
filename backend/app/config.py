@@ -5,8 +5,13 @@ DeepSeek 为主力对话模型；中转站（OpenAI 兼容）用于 bge 等非 D
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
@@ -28,6 +33,10 @@ class Settings(BaseSettings):
     deepseek_temperature: float = 0.1
     deepseek_max_tokens: int = 2048
     deepseek_timeout: float = 60.0
+    startup_llm_timeout: float = 15.0
+    structured_output_mode: str = "auto"
+    structured_max_repairs: int = 1
+    structured_raw_log_max_chars: int = 1000
 
     # ---- 中转站（非 DeepSeek 模型，OpenAI 兼容） ----
     relay_api_key: str = ""
@@ -58,6 +67,7 @@ class Settings(BaseSettings):
     hybrid_topk: int = 5
     bm25_top: int = 20
     vector_top: int = 20
+    require_knowledge_base: bool = True
     reranker_enabled: bool = True
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
 
@@ -125,6 +135,14 @@ class Settings(BaseSettings):
     timeout_retrieval: float = 2.0
     timeout_answer: float = 5.0
     timeout_verify: float = 3.0
+
+    @field_validator("sqlite_path", "chroma_path", "upload_storage_dir", mode="after")
+    @classmethod
+    def resolve_runtime_path(cls, value: str) -> str:
+        path = Path(value).expanduser()
+        if path.is_absolute():
+            return str(path)
+        return str((BACKEND_ROOT / path).resolve())
 
     @property
     def cors_origin_list(self) -> list[str]:
