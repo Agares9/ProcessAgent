@@ -9,4 +9,5 @@ local-data
 uploads
 model-cache
 cache
+archive
 *.pyc
