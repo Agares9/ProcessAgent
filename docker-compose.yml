@@ -1,0 +1,42 @@
+services:
+  processagent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DEBIAN_MIRROR: https://mirrors.aliyun.com
+        PIP_INDEX_URL: https://mirrors.aliyun.com/pypi/simple/
+        PIP_TRUSTED_HOST: mirrors.aliyun.com
+    container_name: processagent-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STORAGE_MODE: sqlite
+      SQLITE_PATH: /app/local-data/processagent.db
+
+      VECTOR_BACKEND: chroma
+      CHROMA_PATH: /app/local-data/chroma
+
+      EMBEDDING_PROVIDER: local
+      EMBEDDING_MODEL: BAAI/bge-small-zh-v1.5
+      EMBEDDING_DIM: "512"
+      EMBEDDING_LOCAL_ONLY: "true"
+      HF_HOME: /app/cache/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+
+      REQUIRE_KNOWLEDGE_BASE: "true"
+      STARTUP_LLM_TIMEOUT: "30"
+
+      STRUCTURED_OUTPUT_MODE: json_object
+      STRUCTURED_MAX_REPAIRS: "1"
+      STRUCTURED_RAW_LOG_MAX_CHARS: "0"
+
+      CORS_ORIGINS: "*"
+      SEED_DEMO_USERS: "false"
+    ports:
+      - "8088:8088"
+    volumes:
+      - ./local-data:/app/local-data
+      - ./cache:/app/cache

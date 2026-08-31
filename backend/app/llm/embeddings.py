@@ -62,9 +62,10 @@ class EmbeddingClient:
                 transformers_logging.set_verbosity_error()
             except Exception:
                 pass
-        except ImportError:
-            logger.warning("未安装 sentence-transformers，回退 hash 向量")
-            return [self._hash_embed(t) for t in texts]
+        except ImportError as exc:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER=local 需要安装 sentence-transformers，禁止回退到测试用 hash 向量"
+            ) from exc
         if self._local_model is None:
             os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
             os.environ.setdefault("TQDM_DISABLE", "1")

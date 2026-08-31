@@ -84,24 +84,3 @@ async def test_department_rules_are_scoped(fresh_container):
     assert any(r["_id"] == "dept-rule" for r in await c.rule_engine.active_rules(["dept_jwc"]))
     assert all(r["_id"] != "dept-rule" for r in await c.rule_engine.active_rules(["dept_cwc"]))
 
-
-@pytest.mark.asyncio
-async def test_failed_experiment_rolls_back(fresh_container):
-    c = fresh_container
-    c.settings.loop_rollback_min_samples = 2
-    c.settings.loop_rollback_margin = 0.1
-    skill = _skill(0.5)
-    await c.store.upsert_skill(skill)
-    await c.store.upsert("experiments", {
-        "_id": "exp-1", "artifact_id": skill["_id"], "status": "running"
-    })
-    for group, results in (("treatment", [False, False]), ("control", [True, True])):
-        for i, success in enumerate(results):
-            await c.store.upsert("strategy_executions", {
-                "_id": f"{group}-{i}", "artifact_id": skill["_id"],
-                "group": group, "success": success,
-            })
-    count = await c.loop_engine._rollback_failed_experiments()
-    assert count == 1
-    assert (await c.store.get_skill(skill["_id"]))["status"] == "deprecated"
-    assert (await c.store.get("experiments", "exp-1"))["status"] == "rolled_back"

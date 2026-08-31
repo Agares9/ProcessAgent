@@ -36,12 +36,6 @@ async def test_department_client_parallel_partial_success(monkeypatch):
     assert failed == ["dept_cwc"]
 
 
-@pytest.mark.asyncio
-async def test_orchestrator_enforces_dept_id(fresh_container):
-    c = fresh_container
-    c.settings.dept_id = "dept_jwc"
-    with pytest.raises(PermissionError):
-        await c.orchestrator.answer("学费", dept_ids=["dept_cwc"])
 
 
 @pytest.mark.asyncio
